@@ -1,127 +1,112 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
-from ctypes import addressof
-from threading import Lock
+from enum import IntFlag
+from itertools import chain
+from typing import Sequence, Tuple
 
-from .constants import viewport_size, GLfloat, GLint, GLuint
-from .fast_data_types import glUniform3fv, GL_TRIANGLE_FAN, glMultiDrawArrays
-from .layout import available_height
-from .utils import get_dpi
-from .shaders import ShaderProgram
-
-
-def as_color(c):
-    return c[0] / 255, c[1] / 255, c[2] / 255
-
-
-def to_opengl(x, y):
-    return -1 + 2 * x / viewport_size.width, 1 - 2 * y / viewport_size.height
+from .fast_data_types import (
+    BORDERS_PROGRAM, add_borders_rect, compile_program, get_options,
+    init_borders_program, os_window_has_background_image
+)
+from .typing import LayoutType
+from .utils import load_shaders
+from .window_list import WindowGroup, WindowList
 
 
-def as_rect(left, top, right, bottom, color=0):
-    for (x, y) in ((right, top), (right, bottom), (left, bottom), (left, top)):
-        x, y = to_opengl(x, y)
-        yield x
-        yield y
-        yield color
+class BorderColor(IntFlag):
+    # See the border vertex shader for how these flags become actual colors
+    default_bg, active, inactive, window_bg, bell = ((1 << i) for i in range(5))
 
 
-class BordersProgram(ShaderProgram):
+def vertical_edge(os_window_id: int, tab_id: int, color: int, width: int, top: int, bottom: int, left: int) -> None:
+    if width > 0:
+        add_borders_rect(os_window_id, tab_id, left, top, left + width, bottom, color)
 
-    def __init__(self):
-        ShaderProgram.__init__(self, '''\
-uniform vec3 colors[3];
-in vec3 rect;
-out vec3 color;
 
-void main() {
-    gl_Position = vec4(rect[0], rect[1], 0, 1);
-    color = colors[uint(rect[2])];
-}
-''', '''\
-in vec3 color;
-out vec4 final_color;
+def horizontal_edge(os_window_id: int, tab_id: int, color: int, height: int, left: int, right: int, top: int) -> None:
+    if height > 0:
+        add_borders_rect(os_window_id, tab_id, left, top, right, top + height, color)
 
-void main() {
-    final_color = vec4(color, 1);
-}
-        ''')
-        self.add_vertex_array('rect')
 
-    def send_data(self, data):
-        self.send_vertex_data('rect', data)
+def draw_edges(os_window_id: int, tab_id: int, colors: Sequence[int], wg: WindowGroup, borders: bool = False) -> None:
+    geometry = wg.geometry
+    if geometry is None:
+        return
+    pl, pt = wg.effective_padding('left'), wg.effective_padding('top')
+    pr, pb = wg.effective_padding('right'), wg.effective_padding('bottom')
+    left = geometry.left - pl
+    top = geometry.top - pt
+    lr = geometry.right
+    right = lr + pr
+    bt = geometry.bottom
+    bottom = bt + pb
+    if borders:
+        width = wg.effective_border()
+        bt = bottom
+        lr = right
+        left -= width
+        top -= width
+        right += width
+        bottom += width
+        pl = pr = pb = pt = width
+    horizontal_edge(os_window_id, tab_id, colors[1], pt, left, right, top)
+    horizontal_edge(os_window_id, tab_id, colors[3], pb, left, right, bt)
+    vertical_edge(os_window_id, tab_id, colors[0], pl, top, bottom, left)
+    vertical_edge(os_window_id, tab_id, colors[2], pr, top, bottom, lr)
 
-    def set_colors(self, color_buf):
-        glUniform3fv(self.uniform_location('colors'), 3, addressof(color_buf))
+
+def load_borders_program() -> None:
+    compile_program(BORDERS_PROGRAM, *load_shaders('border'))
+    init_borders_program()
 
 
 class Borders:
 
-    def __init__(self, opts):
-        self.is_dirty = False
-        self.lock = Lock()
-        self.can_render = False
-        dpix, dpiy = get_dpi()['logical']
-        dpi = (dpix + dpiy) / 2
-        self.border_width = round(opts.window_border_width * dpi / 72)
-        self.color_buf = (GLfloat * 9)(
-            *as_color(opts.background),
-            *as_color(opts.active_border_color),
-            *as_color(opts.inactive_border_color)
-        )
+    def __init__(self, os_window_id: int, tab_id: int):
+        self.os_window_id = os_window_id
+        self.tab_id = tab_id
 
-    def __call__(self, windows, active_window, draw_window_borders=True):
-        vw, vh = viewport_size.width, available_height()
-        if windows:
-            left_edge = min(w.geometry.left for w in windows)
-            right_edge = max(w.geometry.right for w in windows)
-            top_edge = min(w.geometry.top for w in windows)
-            bottom_edge = max(w.geometry.bottom for w in windows)
-        else:
-            left_edge = top_edge = 0
-            right_edge = vw
-            bottom_edge = vh
-        rects = []
-        if left_edge > 0:
-            rects.extend(as_rect(0, 0, left_edge, vh))
-        if top_edge > 0:
-            rects.extend(as_rect(0, 0, vw, top_edge))
-        if right_edge < vw:
-            rects.extend(as_rect(right_edge, 0, vw, vh))
-        if bottom_edge < vh:
-            rects.extend(as_rect(0, bottom_edge, vw, vh))
-        if draw_window_borders and self.border_width > 0:
-            bw = self.border_width
-            for w in windows:
-                g = w.geometry
-                color = 1 if w is active_window else 2
-                rects.extend(as_rect(g.left - bw, g.top - bw, g.left, g.bottom + bw, color))
-                rects.extend(as_rect(g.left - bw, g.top - bw, g.right + bw, g.top, color))
-                rects.extend(as_rect(g.right, g.top - bw, g.right + bw, g.bottom + bw, color))
-                rects.extend(as_rect(g.left - bw, g.bottom, g.right + bw, g.bottom + bw, color))
-        with self.lock:
-            self.num_of_rects = len(rects) // 12
-            self.rects = (GLfloat * len(rects))()
-            self.starts = (GLint * self.num_of_rects)()
-            self.counts = (GLuint * self.num_of_rects)()
-            for i, x in enumerate(rects):
-                self.rects[i] = x
-                if i % 12 == 0:
-                    idx = i // 12
-                    self.starts[idx] = i // 3
-                    self.counts[idx] = 4
-            self.is_dirty = True
-            self.can_render = True
+    def __call__(
+        self,
+        all_windows: WindowList,
+        current_layout: LayoutType,
+        extra_blank_rects: Sequence[Tuple[int, int, int, int]],
+        draw_window_borders: bool = True,
+    ) -> None:
+        opts = get_options()
+        draw_active_borders = opts.active_border_color is not None
+        draw_minimal_borders = opts.draw_minimal_borders and max(opts.window_margin_width) < 1
+        add_borders_rect(self.os_window_id, self.tab_id, 0, 0, 0, 0, BorderColor.default_bg)
+        has_background_image = os_window_has_background_image(self.os_window_id)
+        if not has_background_image:
+            for br in chain(current_layout.blank_rects, extra_blank_rects):
+                left, top, right, bottom = br
+                add_borders_rect(self.os_window_id, self.tab_id, left, top, right, bottom, BorderColor.default_bg)
+        bw = 0
+        groups = tuple(all_windows.iter_all_layoutable_groups(only_visible=True))
+        if groups:
+            bw = groups[0].effective_border()
+        draw_borders = bw > 0 and draw_window_borders
+        active_group = all_windows.active_group
 
-    def render(self, program):
-        with self.lock:
-            if not self.can_render:
-                return
-            with program:
-                if self.is_dirty:
-                    program.send_data(self.rects)
-                    program.set_colors(self.color_buf)
-                    self.is_dirty = False
-                glMultiDrawArrays(GL_TRIANGLE_FAN, addressof(self.starts), addressof(self.counts), self.num_of_rects)
+        for i, wg in enumerate(groups):
+            window_bg = wg.default_bg
+            window_bg = (window_bg << 8) | BorderColor.window_bg
+            if draw_borders and not draw_minimal_borders:
+                # Draw the border rectangles
+                if wg is active_group and draw_active_borders:
+                    color = BorderColor.active
+                else:
+                    color = BorderColor.bell if wg.needs_attention else BorderColor.inactive
+                draw_edges(self.os_window_id, self.tab_id, (color, color, color, color), wg, borders=True)
+            if not has_background_image:
+                # Draw the background rectangles over the padding region
+                colors = window_bg, window_bg, window_bg, window_bg
+                draw_edges(self.os_window_id, self.tab_id, colors, wg)
+
+        if draw_minimal_borders:
+            for border_line in current_layout.get_minimal_borders(all_windows):
+                left, top, right, bottom = border_line.edges
+                add_borders_rect(self.os_window_id, self.tab_id, left, top, right, bottom, border_line.color)

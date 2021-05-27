@@ -16,7 +16,7 @@
 /* *Insert/Replace Mode*: When enabled, new display characters move
    old display characters to the right. Characters moved past the
    right margin are lost. Otherwise, new display characters replace
-   old display characters at the cursor position. 
+   old display characters at the cursor position.
 */
 #define IRM 4
 
@@ -67,11 +67,16 @@
 #define MOUSE_SGR_MODE (1006 << 5)
 #define MOUSE_URXVT_MODE (1015 << 5)
 
+// Save cursor (DECSC)
+#define SAVE_CURSOR (1048 << 5)
+
 // Alternate screen buffer
+#define TOGGLE_ALT_SCREEN_1 (47 << 5)
+#define TOGGLE_ALT_SCREEN_2 (1047 << 5)
 #define ALTERNATE_SCREEN  (1049 << 5)
 
 // Bracketed paste mode
-// http://cirw.in/blog/bracketed-paste
+// https://cirw.in/blog/bracketed-paste
 #define BRACKETED_PASTE (2004 << 5)
-#define BRACKETED_PASTE_START "\033[200~"
-#define BRACKETED_PASTE_END  "\033[201~"
+#define BRACKETED_PASTE_START "200~"
+#define BRACKETED_PASTE_END  "201~"

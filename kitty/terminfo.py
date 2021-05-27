@@ -1,9 +1,30 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import re
-from binascii import unhexlify, hexlify
+from binascii import hexlify, unhexlify
+from typing import TYPE_CHECKING, Dict, Generator, Optional, cast
+
+if TYPE_CHECKING:
+    from .options_stub import Options
+
+
+def modify_key_bytes(keybytes: bytes, amt: int) -> bytes:
+    if amt == 0:
+        return keybytes
+    ans = bytearray(keybytes)
+    samt = str(amt).encode('ascii')
+    if ans[-1] == ord('~'):
+        return bytes(ans[:-1] + bytearray(b';' + samt + b'~'))
+    if ans[1] == ord('O'):
+        return bytes(ans[:1] + bytearray(b'[1;' + samt) + ans[-1:])
+    raise ValueError('Unknown key type in key: {!r}'.format(keybytes))
+
+
+def encode_keystring(keybytes: bytes) -> str:
+    return keybytes.decode('ascii').replace('\033', r'\E')
+
 
 names = 'xterm-kitty', 'KovIdTTY'
 
@@ -30,8 +51,18 @@ bool_capabilities = {
     'xenl',
     # has extra status line (window title)
     'hs',
+    # Terminfo extension used by tmux to detect true color support (non-standard)
+    'Tc',
+    # Indicates support for styled and colored underlines (non-standard) as
+    # described at:
+    # https://github.com/kovidgoyal/kitty/blob/master/protocol-extensions.asciidoc
+    'Su',
+    # Indicates support for full keyboard mode (non-standard) as
+    # described at:
+    # https://github.com/kovidgoyal/kitty/blob/master/protocol-extensions.asciidoc
+    'fullkbd',
 
-    # The following are entries from termite's terminfo that we dont need
+    # The following are entries that we don't use
     # # background color erase
     # 'bce',
 }
@@ -84,15 +115,15 @@ string_capabilities = {
     # Make cursor appear normal
     'cnorm': r'\E[?12l\E[?25h',
     # Carriage return
-    'cr': r'^M',
+    'cr': r'^M',  # CR (carriage return \r)
     # Change scroll region
     'csr': r'\E[%i%p1%d;%p2%dr',
     # Move cursor to the left by the specified amount
     'cub': r'\E[%p1%dD',
-    'cub1': r'^H',
+    'cub1': r'^H',  # BS (backspace)
     # Move cursor down specified number of lines
     'cud': r'\E[%p1%dB',
-    'cud1': r'^J',
+    'cud1': r'^J',  # LF (line-feed \n)
     # Move cursor to the right by the specified amount
     'cuf': r'\E[%p1%dC',
     'cuf1': r'\E[C',
@@ -145,45 +176,16 @@ string_capabilities = {
     # 'invis': r'\E[8m',
     # Backspace
     'kbs': r'\177',
-    # Left
-    'kcub1': r'\EOD',
-    # Down
-    'kcud1': r'\EOB',
-    # Right
-    'kcuf1': r'\EOC',
-    # Up
-    'kcuu1': r'\EOA',
-    # Function keys
-    'kf1': r'\EOP',
-    'kf2': r'\EOQ',
-    'kf3': r'\EOR',
-    'kf4': r'\EOS',
-    'kf5': r'\E[15~',
-    'kf6': r'\E[17~',
-    'kf7': r'\E[18~',
-    'kf8': r'\E[19~',
-    'kf9': r'\E[20~',
-    'kf10': r'\E[21~',
-    'kf11': r'\E[23~',
-    'kf12': r'\E[24~',
-    # Home
-    'khome': r'\EOH',
-    # End
-    'kend': r'\EOF',
-    # Insert character key
-    'kich1': r'\E[2~',
-    # Delete character key
-    'kdch1': r'\E[3~',
     # Mouse event has occurred
     'kmous': r'\E[M',
-    # Page down
-    'knp': r'\E[6~',
-    # Page up
-    'kpp': r'\E[5~',
     # Scroll backwards (reverse index)
     'kri': r'\E[1;2A',
+    # scroll forwards (index)
+    'kind': r'\E[1;2B',
     # Restore cursor
     'rc': r'\E8',
+    # Repeat preceding character
+    'rep': r'%p1%c\E[%p2%{1}%-%db',
     # Reverse video
     'rev': r'\E[7m',
     # Scroll backwards the specified number of lines (reverse index)
@@ -195,12 +197,16 @@ string_capabilities = {
     'rmcup': r'\E[?1049l',
     # Exit insert mode
     'rmir': r'\E[4l',
+    # Exit application keypad mode
+    'rmkx': r'\E[?1l',
     # Exit standout mode
     'rmso': r'\E[27m',
     # Exit underline mode
     'rmul': r'\E[24m',
-    # Reset string1
-    'rs1': r'\Ec',
+    # Exit strikethrough mode
+    'rmxx': r'\E[29m',
+    # Reset string1 (empty OSC sequence to exit OSC/OTH modes, and regular reset)
+    'rs1': r'\E]\E\\\Ec',
     # Save cursor
     'sc': r'\E7',
     # Set background color
@@ -217,12 +223,16 @@ string_capabilities = {
     'smam': r'\E[?7h',
     # Start alternate screen
     'smcup': r'\E[?1049h',
-    # Enster insert mode
+    # Enter insert mode
     'smir': r'\E[4h',
+    # Enter application keymap mode
+    'smkx': r'\E[?1h',
     # Enter standout mode
     'smso': r'\E[7m',
     # Enter underline mode
     'smul': r'\E[4m',
+    # Enter strikethrough mode
+    'smxx': r'\E[9m',
     # Clear all tab stops
     'tbc': r'\E[3g',
     # To status line (used to set window titles)
@@ -240,11 +250,6 @@ string_capabilities = {
     # Select alternate charset
     'smacs': r'\E(0',
     'rmacs': r'\E(B',
-    # Shifted keys
-    'kRIT': r'\E[1;2C',
-    'kLFT': r'\E[1;2D',
-    'kEND': r'\E[1;2F',
-    'kHOM': r'\E[1;2H',
     # Special keys
     'khlp': r'',
     'kund': r'',
@@ -252,23 +257,51 @@ string_capabilities = {
     'ka3': r'',
     'kc1': r'',
     'kc3': r'',
+    # Set RGB foreground color (non-standard used by neovim)
+    'setrgbf': r'\E[38:2:%p1%d:%p2%d:%p3%dm',
+    # Set RGB background color (non-standard used by neovim)
+    'setrgbb': r'\E[48:2:%p1%d:%p2%d:%p3%dm',
 
-    # The following are entries from termite's terminfo that we dont need
-    # # display status line
-    # 'dsl': r'\E]2;\007',
-    # # return from status line
-    # 'fsl': r'^G',
+    # The following entries are for compatibility with xterm,
+    # and shell scripts using e.g. `tput u7` to emit a CPR escape
+    # See https://invisible-island.net/ncurses/terminfo.src.html
+    # and INTERPRETATION OF USER CAPABILITIES
+    'u6': r'\E[%i%d;%dR',
+    'u7': r'\E[6n',
+    'u8': r'\E[?%[;0123456789]c',
+    'u9': r'\E[c',
+
+    # The following are entries that we don't use
     # # turn on blank mode, (characters invisible)
     # 'invis': r'\E[8m',
     # # init2 string
     # 'is2': r'\E[!p\E[?3;4l\E[4l\E>',
     # # Enter/send key
     # 'kent': r'\EOM',
-    # # scroll forwards
-    # 'kind': r'\E[1;2B',
     # # reset2
     # 'rs2': r'\E[!p\E[?3;4l\E[4l\E>',
 }
+
+string_capabilities.update({
+    'kf{}'.format(offset + n):
+        encode_keystring(modify_key_bytes(b'\033' + value, mod))
+    for offset, mod in {0: 0, 12: 2, 24: 5, 36: 6, 48: 3, 60: 4}.items()
+    for n, value in zip(range(1, 13),
+                        b'OP OQ OR OS [15~ [17~ [18~ [19~ [20~ [21~ [23~ [24~'.split())
+    if offset + n < 64
+})
+
+string_capabilities.update({
+    name.format(unmod=unmod, key=key):
+        encode_keystring(modify_key_bytes(b'\033' + value, mod))
+    for unmod, key, value in zip(
+        'cuu1 cud1 cuf1 cub1 end home ich1 dch1 pp  np'.split(),
+        'UP   DN   RIT  LFT  END HOM  IC   DC   PRV NXT'.split(),
+        b'OA  OB   OC   OD   OF  OH   [2~  [3~  [5~ [6~'.split())
+    for name, mod in {
+        'k{unmod}': 0, 'k{key}': 2, 'k{key}3': 3, 'k{key}4': 4,
+        'k{key}5': 5, 'k{key}6': 6, 'k{key}7': 7}.items()
+})
 
 termcap_aliases.update({
     'ac': 'acsc',
@@ -318,18 +351,6 @@ termcap_aliases.update({
     'kd': 'kcud1',
     'kr': 'kcuf1',
     'ku': 'kcuu1',
-    'k1': 'kf1',
-    'k2': 'kf2',
-    'k3': 'kf3',
-    'k4': 'kf4',
-    'k5': 'kf5',
-    'k6': 'kf6',
-    'k7': 'kf7',
-    'k8': 'kf8',
-    'k9': 'kf9',
-    'k;': 'kf10',
-    'F1': 'kf11',
-    'F2': 'kf12',
     'kh': 'khome',
     '@7': 'kend',
     'kI': 'kich1',
@@ -338,7 +359,9 @@ termcap_aliases.update({
     'kN': 'knp',
     'kP': 'kpp',
     'kR': 'kri',
+    'kF': 'kind',
     'rc': 'rc',
+    'rp': 'rep',
     'mr': 'rev',
     'sr': 'ri',
     'SR': 'rin',
@@ -347,6 +370,7 @@ termcap_aliases.update({
     'ei': 'rmir',
     'se': 'rmso',
     'ue': 'rmul',
+    'Te': 'rmxx',
     'r1': 'rs1',
     'sc': 'sc',
     'AB': 'setab',
@@ -359,15 +383,22 @@ termcap_aliases.update({
     'im': 'smir',
     'so': 'smso',
     'us': 'smul',
+    'Ts': 'smxx',
     'ct': 'tbc',
     'cv': 'vpa',
     'ZH': 'sitm',
     'ZR': 'ritm',
     'as': 'smacs',
     'ae': 'rmacs',
+    'ks': 'smkx',
+    'ke': 'rmkx',
     '#2': 'kHOM',
+    '#3': 'kIC',
     '#4': 'kLFT',
+    '*4': 'kDC',
     '*7': 'kEND',
+    '%c': 'kNXT',
+    '%e': 'kPRV',
     '%i': 'kRIT',
     '%1': 'khlp',
     '&8': 'kund',
@@ -379,6 +410,10 @@ termcap_aliases.update({
     'fs': 'fsl',
     'ds': 'dsl',
 
+    'u6': 'u6',
+    'u7': 'u7',
+    'u8': 'u8',
+    'u9': 'u9',
 
     # 'ut': 'bce',
     # 'ds': 'dsl',
@@ -386,19 +421,32 @@ termcap_aliases.update({
     # 'mk': 'invis',
     # 'is': 'is2',
     # '@8': 'kent',
-    # 'kF': 'kind',
     # 'r2': 'rs2',
 })
 
-queryable_capabilities = numeric_capabilities.copy()
+termcap_aliases.update({
+    tc: 'kf{}'.format(n)
+    for n, tc in enumerate(
+        'k1 k2 k3 k4 k5 k6 k7 k8 k9 k; F1 F2 F3 F4 F5 F6 F7 F8 F9 FA '
+        'FB FC FD FE FF FG FH FI FJ FK FL FM FN FO FP FQ FR FS FT FU '
+        'FV FW FX FY FZ Fa Fb Fc Fd Fe Ff Fg Fh Fi Fj Fk Fl Fm Fn Fo '
+        'Fp Fq Fr'.split(), 1)})
+
+queryable_capabilities = cast(Dict[str, str], numeric_capabilities.copy())
 queryable_capabilities.update(string_capabilities)
 extra = (bool_capabilities | numeric_capabilities.keys() | string_capabilities.keys()) - set(termcap_aliases.values())
-if extra:
-    raise Exception('Termcap aliases not complete, missing: {}'.format(extra))
+no_termcap_for = frozenset(
+    'Su Tc setrgbf setrgbb fullkbd kUP kDN'.split() + [
+        'k{}{}'.format(key, mod)
+        for key in 'UP DN RIT LFT END HOM IC DC PRV NXT'.split()
+        for mod in range(3, 8)])
+if extra - no_termcap_for:
+    raise Exception('Termcap aliases not complete, missing: {}'.format(extra - no_termcap_for))
 del extra
 
 
-def generate_terminfo():
+def generate_terminfo() -> str:
+    # Use ./build-terminfo to update definition files
     ans = ['|'.join(names)]
     ans.extend(sorted(bool_capabilities))
     ans.extend('{}#{}'.format(k, numeric_capabilities[k]) for k in sorted(numeric_capabilities))
@@ -410,31 +458,49 @@ octal_escape = re.compile(r'\\([0-7]{3})')
 escape_escape = re.compile(r'\\[eE]')
 
 
-def key_as_bytes(name):
+def key_as_bytes(name: str) -> bytes:
     ans = string_capabilities[name]
     ans = octal_escape.sub(lambda m: chr(int(m.group(1), 8)), ans)
     ans = escape_escape.sub('\033', ans)
     return ans.encode('ascii')
 
 
-def get_capabilities(query_string):
+def get_capabilities(query_string: str, opts: 'Options') -> Generator[str, None, None]:
     from .fast_data_types import ERROR_PREFIX
-    ans = []
-    try:
-        for q in query_string.split(';'):
-            name = unhexlify(q).decode('utf-8')
-            if name == 'TN':
-                val = names[0]
+
+    def result(encoded_query_name: str, x: Optional[str] = None) -> str:
+        if x is None:
+            return '0+r' + encoded_query_name
+        return '1+r' + encoded_query_name + '=' + hexlify(str(x).encode('utf-8')).decode('ascii')
+
+    for encoded_query_name in query_string.split(';'):
+        name = qname = unhexlify(encoded_query_name).decode('utf-8')
+        if name in ('TN', 'name'):
+            yield result(encoded_query_name, names[0])
+        elif name.startswith('kitty-query-'):
+            name = name[len('kitty-query-'):]
+            if name == 'version':
+                from .constants import str_version
+                yield result(encoded_query_name, str_version)
+            elif name == 'allow_hyperlinks':
+                yield result(encoded_query_name,
+                             'ask' if opts.allow_hyperlinks == 0b11 else ('yes' if opts.allow_hyperlinks else 'no'))
             else:
+                from .utils import log_error
+                log_error('Unknown kitty terminfo query:', name)
+                yield result(encoded_query_name)
+        else:
+            try:
+                val = queryable_capabilities[name]
+            except KeyError:
                 try:
-                    val = queryable_capabilities[name]
-                except KeyError:
-                    try:
-                        val = queryable_capabilities[termcap_aliases[name]]
-                    except Exception as e:
-                        print(ERROR_PREFIX, 'Unknown terminfo property:', name)
-                        raise
-            ans.append(q + '=' + hexlify(str(val)))
-        return b'\033P1+r' + ';'.join(ans).encode('utf-8') + b'\033\\'
-    except Exception:
-        return b'\033P0+r' + query_string.encode('utf-8') + b'\033\\'
+                    qname = termcap_aliases[name]
+                    val = queryable_capabilities[qname]
+                except Exception:
+                    from .utils import log_error
+                    log_error(ERROR_PREFIX, 'Unknown terminfo property:', name)
+                    yield result(encoded_query_name)
+                    continue
+            if qname in string_capabilities and '%' not in val:
+                val = key_as_bytes(qname).decode('ascii')
+            yield result(encoded_query_name, val)

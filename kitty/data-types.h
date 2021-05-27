@@ -7,98 +7,104 @@
 
 #pragma once
 
-
-#include <stdint.h>
-#include <stdbool.h>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <poll.h>
+#include <pthread.h>
+#include "glfw-wrapper.h"
+#include "banned.h"
+// Required minimum OpenGL version
+#define OPENGL_REQUIRED_VERSION_MAJOR 3
+#define OPENGL_REQUIRED_VERSION_MINOR 3
+#define GLFW_MOD_KITTY 1024
 #define UNUSED __attribute__ ((unused))
-#define MAX(x, y) (((x) > (y)) ? (x) : (y))
-#define MIN(x, y) (((x) > (y)) ? (y) : (x))
+#define PYNOARG PyObject *__a1 UNUSED, PyObject *__a2 UNUSED
+#define EXPORTED __attribute__ ((visibility ("default")))
+#define LIKELY(x)    __builtin_expect (!!(x), 1)
+#define UNLIKELY(x)  __builtin_expect (!!(x), 0)
+#define MAX(x, y) __extension__ ({ \
+    __typeof__ (x) a = (x); __typeof__ (y) b = (y); \
+        a > b ? a : b;})
+#define MIN(x, y) __extension__ ({ \
+    __typeof__ (x) a = (x); __typeof__ (y) b = (y); \
+        a < b ? a : b;})
+#define xstr(s) str(s)
+#define str(s) #s
+#define arraysz(x) (sizeof(x)/sizeof(x[0]))
+#define zero_at_i(array, idx) memset((array) + (idx), 0, sizeof((array)[0]))
+#define zero_at_ptr(p) memset((p), 0, sizeof((p)[0]))
+#define zero_at_ptr_count(p, count) memset((p), 0, (count) * sizeof((p)[0]))
+void log_error(const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
+#define fatal(...) { log_error(__VA_ARGS__); exit(EXIT_FAILURE); }
+static inline void cleanup_free(void *p) { free(*(void**)p); }
+#define FREE_AFTER_FUNCTION __attribute__((cleanup(cleanup_free)))
 
-typedef Py_UCS4 char_type;
-typedef uint64_t color_type;
-typedef uint32_t decoration_type;
-typedef uint32_t combining_type;
+typedef unsigned long long id_type;
+typedef uint32_t char_type;
+typedef uint32_t color_type;
+typedef uint16_t hyperlink_id_type;
+typedef int key_type;
+#define HYPERLINK_MAX_NUMBER UINT16_MAX
+typedef uint16_t combining_type;
+typedef uint16_t glyph_index;
+typedef uint32_t pixel;
 typedef unsigned int index_type;
+typedef uint16_t sprite_index;
+typedef uint16_t attrs_type;
+typedef uint8_t line_attrs_type;
+typedef enum CursorShapes { NO_CURSOR_SHAPE, CURSOR_BLOCK, CURSOR_BEAM, CURSOR_UNDERLINE, NUM_OF_CURSOR_SHAPES } CursorShape;
+typedef enum { DISABLE_LIGATURES_NEVER, DISABLE_LIGATURES_CURSOR, DISABLE_LIGATURES_ALWAYS } DisableLigature;
 
 #define ERROR_PREFIX "[PARSE ERROR]"
-#define ANY_MODE 3
-#define MOTION_MODE 2
-#define BUTTON_MODE 1
-#define NORMAL_PROTOCOL 0
-#define UTF8_PROTOCOL 1
-#define SGR_PROTOCOL 2
-#define URXVT_PROTOCOL 3
+typedef enum MouseTrackingModes { NO_TRACKING, BUTTON_MODE, MOTION_MODE, ANY_MODE } MouseTrackingMode;
+typedef enum MouseTrackingProtocols { NORMAL_PROTOCOL, UTF8_PROTOCOL, SGR_PROTOCOL, URXVT_PROTOCOL} MouseTrackingProtocol;
+typedef enum MouseShapes { BEAM, HAND, ARROW } MouseShape;
+typedef enum { NONE, MENUBAR, WINDOW, ALL } WindowTitleIn;
+typedef enum { TILING, SCALED, MIRRORED } BackgroundImageLayout;
 
-#define CELL_SIZE (sizeof(char_type) + sizeof(color_type) + sizeof(decoration_type) + sizeof(combining_type))
-// The data cell size must be a multiple of 3
-#define DATA_CELL_SIZE 2 * 3
-
-#define CHAR_MASK 0xFFFFFF
-#define ATTRS_SHIFT 24
-#define ATTRS_MASK_WITHOUT_WIDTH 0xFC000000
+#define MAX_CHILDREN 512
+#define BLANK_CHAR 0
+#define ATTRS_MASK_WITHOUT_WIDTH 0xFFFC
 #define WIDTH_MASK  3
 #define DECORATION_SHIFT  2
 #define DECORATION_MASK 3
 #define BOLD_SHIFT 4
 #define ITALIC_SHIFT 5
+#define BI_VAL(attrs) ((attrs >> 4) & 3)
 #define REVERSE_SHIFT 6
 #define STRIKE_SHIFT 7
+#define DIM_SHIFT 8
+#define MARK_SHIFT 9
+#define ATTRS_MASK_WITHOUT_MARK 0xf9ff
+#define ATTRS_MASK_FOR_SGR (ATTRS_MASK_WITHOUT_MARK | ATTRS_MASK_WITHOUT_WIDTH)
+#define MARK_MASK 3
 #define COL_MASK 0xFFFFFFFF
-#define COL_SHIFT  32
-#define HAS_BG_MASK (0xFF << COL_SHIFT)
-#define CC_MASK 0xFFFF
-#define CC_SHIFT 16
-#define UTF8_ACCEPT 0
-#define UTF8_REJECT 1
-#define UNDERCURL_CODE 6
 #define DECORATION_FG_CODE 58
+#define CHAR_IS_BLANK(ch) ((ch) == 32 || (ch) == 0)
+#define CONTINUED_MASK 1
+#define TEXT_DIRTY_MASK 2
 
-#define CURSOR_BLOCK 1
-#define CURSOR_BEAM 2
-#define CURSOR_UNDERLINE 3
 #define FG 1
 #define BG 2
 
 #define CURSOR_TO_ATTRS(c, w) \
     ((w) | (((c->decoration & 3) << DECORATION_SHIFT) | ((c->bold & 1) << BOLD_SHIFT) | \
-            ((c->italic & 1) << ITALIC_SHIFT) | ((c->reverse & 1) << REVERSE_SHIFT) | ((c->strikethrough & 1) << STRIKE_SHIFT))) << ATTRS_SHIFT
+            ((c->italic & 1) << ITALIC_SHIFT) | ((c->reverse & 1) << REVERSE_SHIFT) | \
+            ((c->strikethrough & 1) << STRIKE_SHIFT) | ((c->dim & 1) << DIM_SHIFT)))
 
 #define ATTRS_TO_CURSOR(a, c) \
-    c->decoration = (a >> DECORATION_SHIFT) & 3; c->bold = (a >> BOLD_SHIFT) & 1; c->italic = (a >> ITALIC_SHIFT) & 1; \
-    c->reverse = (a >> REVERSE_SHIFT) & 1; c->strikethrough = (a >> STRIKE_SHIFT) & 1;
-
-#define SET_ATTRIBUTE(chars, shift, val) \
-    mask = shift == DECORATION_SHIFT ? 3 : 1; \
-    val = (val & mask) << (ATTRS_SHIFT + shift); \
-    mask = ~(mask << (ATTRS_SHIFT + shift)); \
-    for (index_type i = 0; i < self->xnum; i++)  (chars)[i] = ((chars)[i] & mask) | val;
+    (c)->decoration = (a >> DECORATION_SHIFT) & 3; (c)->bold = (a >> BOLD_SHIFT) & 1; (c)->italic = (a >> ITALIC_SHIFT) & 1; \
+    (c)->reverse = (a >> REVERSE_SHIFT) & 1; (c)->strikethrough = (a >> STRIKE_SHIFT) & 1; (c)->dim = (a >> DIM_SHIFT) & 1;
 
 #define COPY_CELL(src, s, dest, d) \
-        (dest)->chars[d] = (src)->chars[s]; \
-        (dest)->colors[d] = (src)->colors[s]; \
-        (dest)->decoration_fg[d] = (src)->decoration_fg[s]; \
-        (dest)->combining_chars[d] = (src)->combining_chars[s];
+    (dest)->cpu_cells[d] = (src)->cpu_cells[s]; (dest)->gpu_cells[d] = (src)->gpu_cells[s];
 
 #define COPY_SELF_CELL(s, d) COPY_CELL(self, s, self, d)
 
-#define COPY_LINE(src, dest) \
-    memcpy((dest)->chars, (src)->chars, sizeof(char_type) * MIN((src)->xnum, (dest)->xnum)); \
-    memcpy((dest)->colors, (src)->colors, sizeof(color_type) * MIN((src)->xnum, (dest)->xnum)); \
-    memcpy((dest)->decoration_fg, (src)->decoration_fg, sizeof(decoration_type) * MIN((src)->xnum, (dest)->xnum)); \
-    memcpy((dest)->combining_chars, (src)->combining_chars, sizeof(combining_type) * MIN((src)->xnum, (dest)->xnum)); 
-
-#define CLEAR_LINE(l, at, num) \
-    for (index_type i = (at); i < (num); i++) (l)->chars[i] = (1 << ATTRS_SHIFT) | 32; \
-    memset((l)->colors, (at), (num) * sizeof(color_type)); \
-    memset((l)->decoration_fg, (at), (num) * sizeof(decoration_type)); \
-    memset((l)->combining_chars, (at), (num) * sizeof(combining_type));
-
-#define COLORS_TO_CURSOR(col, c) \
-    c->fg = col & COL_MASK; c->bg = (col >> COL_SHIFT)
-
 #define METHOD(name, arg_type) {#name, (PyCFunction)name, arg_type, name##_doc},
+#define METHODB(name, arg_type) {#name, (PyCFunction)name, arg_type, ""}
 
 #define BOOL_GETSET(type, x) \
     static PyObject* x##_get(type *self, void UNUSED *closure) { PyObject *ans = self->x ? Py_True : Py_False; Py_INCREF(ans); return ans; } \
@@ -107,11 +113,15 @@ typedef unsigned int index_type;
 #define GETSET(x) \
     {#x, (getter) x##_get, (setter) x##_set, #x, NULL},
 
+#ifndef EXTRA_INIT
+#define EXTRA_INIT
+#endif
 #define INIT_TYPE(type) \
     int init_##type(PyObject *module) {\
         if (PyType_Ready(&type##_Type) < 0) return 0; \
         if (PyModule_AddObject(module, #type, (PyObject *)&type##_Type) != 0) return 0; \
         Py_INCREF(&type##_Type); \
+        EXTRA_INIT; \
         return 1; \
     }
 
@@ -141,273 +151,186 @@ typedef unsigned int index_type;
 #define END_ALLOW_UNUSED_RESULT _Pragma("GCC diagnostic pop")
 #endif
 
+
+typedef enum UTF8State { UTF8_ACCEPT = 0, UTF8_REJECT = 1} UTF8State;
+
+typedef struct {
+    uint32_t left, top, right, bottom;
+} Region;
+
+typedef struct {
+    color_type fg, bg, decoration_fg;
+    sprite_index sprite_x, sprite_y, sprite_z;
+    attrs_type attrs;
+} GPUCell;
+
+typedef struct {
+    char_type ch;
+    combining_type cc_idx[2];
+    hyperlink_id_type hyperlink_id;
+} CPUCell;
+
+
 typedef struct {
     PyObject_HEAD
 
-    char_type *chars;
-    color_type *colors;
-    decoration_type *decoration_fg;
-    combining_type *combining_chars;
+    GPUCell *gpu_cells;
+    CPUCell *cpu_cells;
     index_type xnum, ynum;
-    bool continued;
-    bool needs_free;
+    bool continued, needs_free, has_dirty_text;
 } Line;
-PyTypeObject Line_Type;
 
 
 typedef struct {
     PyObject_HEAD
 
-    uint8_t *buf;
+    GPUCell *gpu_cell_buf;
+    CPUCell *cpu_cell_buf;
     index_type xnum, ynum, *line_map, *scratch;
-    index_type block_size;
-    bool *continued_map;
+    line_attrs_type *line_attrs;
     Line *line;
-
-    // Pointers into buf
-    char_type *chars;
-    color_type *colors;
-    decoration_type *decoration_fg;
-    combining_type *combining_chars;
 } LineBuf;
-PyTypeObject LineBuf_Type;
+
+typedef struct {
+    GPUCell *gpu_cells;
+    CPUCell *cpu_cells;
+    line_attrs_type *line_attrs;
+} HistoryBufSegment;
+
+typedef struct {
+    void *ringbuf;
+    size_t maximum_size;
+    bool rewrap_needed;
+} PagerHistoryBuf;
+
+typedef struct {int x;} *HYPERLINK_POOL_HANDLE;
+typedef struct {
+    Py_UCS4 *buf;
+    size_t len, capacity;
+    HYPERLINK_POOL_HANDLE hyperlink_pool;
+    hyperlink_id_type active_hyperlink_id;
+} ANSIBuf;
 
 typedef struct {
     PyObject_HEAD
 
-    uint8_t *buf;
-    index_type xnum, ynum;
+    index_type xnum, ynum, num_segments;
+    HistoryBufSegment *segments;
+    PagerHistoryBuf *pagerhist;
     Line *line;
     index_type start_of_data, count;
 } HistoryBuf;
-PyTypeObject HistoryBuf_Type;
 
 typedef struct {
     PyObject_HEAD
 
-    bool bold, italic, reverse, strikethrough, blink;
+    bool bold, italic, reverse, strikethrough, blink, dim;
     unsigned int x, y;
-    uint8_t decoration, shape;
-    unsigned long fg, bg, decoration_fg, color;
-
+    uint8_t decoration;
+    CursorShape shape;
+    color_type fg, bg, decoration_fg;
 } Cursor;
-PyTypeObject Cursor_Type;
 
-PyTypeObject Face_Type;
-PyTypeObject Window_Type;
+typedef struct {
+    bool is_visible, is_focused;
+    CursorShape shape;
+    unsigned int x, y;
+    color_type color;
+} CursorRenderInfo;
+
+typedef struct {
+    color_type default_fg, default_bg, cursor_color, cursor_text_color, cursor_text_uses_bg, highlight_fg, highlight_bg;
+} DynamicColor;
+
+
+typedef struct {
+    DynamicColor dynamic_colors;
+    uint32_t color_table[256];
+} ColorStackEntry;
 
 typedef struct {
     PyObject_HEAD
 
+    bool dirty;
     uint32_t color_table[256];
     uint32_t orig_color_table[256];
-
+    ColorStackEntry *color_stack;
+    unsigned int color_stack_idx, color_stack_sz;
+    DynamicColor configured, overridden;
+    color_type mark_foregrounds[MARK_MASK+1], mark_backgrounds[MARK_MASK+1];
 } ColorProfile;
-PyTypeObject ColorProfile_Type;
-
-typedef struct SpritePosition SpritePosition;
-struct SpritePosition {
-    SpritePosition *next;
-    unsigned int x, y, z;
-    char_type ch;
-    combining_type cc;
-    bool is_second;
-    bool filled;
-    bool rendered;
-};
-PyTypeObject SpritePosition_Type;
 
 typedef struct {
-    PyObject_HEAD
+    unsigned int width, height;
+} CellPixelSize;
 
-    size_t max_array_len, max_texture_size, max_y;
-    unsigned int x, y, z, xnum, ynum;
-    SpritePosition cache[1024];
-    bool dirty;
-
-} SpriteMap;
-PyTypeObject SpriteMap_Type;
-
-typedef struct {
-    PyObject_HEAD
-
-    index_type xnum, ynum;
-    bool screen_changed;
-    bool cursor_changed;
-    bool dirty;
-    bool *changed_lines;
-    bool *lines_with_changed_cells;
-    bool *changed_cells;
-    unsigned int history_line_added_count;
-} ChangeTracker;
-PyTypeObject ChangeTracker_Type;
-
-
-typedef struct {
-    bool mLNM, mIRM, mDECTCEM, mDECSCNM, mDECOM, mDECAWM, mDECCOLM, mDECARM, 
-         mBRACKETED_PASTE, mFOCUS_TRACKING;
-    unsigned long mouse_tracking_mode, mouse_tracking_protocol;
-} ScreenModes;
-PyTypeObject ScreenModes_Type;
-
-#define SAVEPOINTS_SZ 256
-
-typedef struct {
-    uint32_t utf8_state, *g0_charset, *g1_charset, *g_charset;
-    bool use_latin1;
-    Cursor cursor;
-    bool mDECOM, mDECAWM, mDECSCNM;
-
-} Savepoint;
-
-
-typedef struct {
-    Savepoint buf[SAVEPOINTS_SZ];
-    index_type start_of_data, count;
-} SavepointBuffer;
-
+typedef struct {int x;} *SPRITE_MAP_HANDLE;
+#define FONTS_DATA_HEAD SPRITE_MAP_HANDLE sprite_map; double logical_dpi_x, logical_dpi_y, font_sz_in_pts; unsigned int cell_width, cell_height;
+typedef struct {FONTS_DATA_HEAD} *FONTS_DATA_HANDLE;
 
 #define PARSER_BUF_SZ (8 * 1024)
 #define READ_BUF_SZ (1024*1024)
 
-typedef struct {
-    PyObject_HEAD
+#define clear_sprite_position(cell) (cell).sprite_x = 0; (cell).sprite_y = 0; (cell).sprite_z = 0;
 
-    unsigned int columns, lines, margin_top, margin_bottom, charset;
-    uint32_t utf8_state, *g0_charset, *g1_charset, *g_charset;
-    bool use_latin1;
-    Cursor *cursor;
-    SavepointBuffer main_savepoints, alt_savepoints;
-    PyObject *callbacks;
-    LineBuf *linebuf, *main_linebuf, *alt_linebuf;
-    HistoryBuf *historybuf;
-    bool *tabstops, *main_tabstops, *alt_tabstops;
-    ChangeTracker *change_tracker;
-    ScreenModes modes;
+#define ensure_space_for(base, array, type, num, capacity, initial_cap, zero_mem) \
+    if ((base)->capacity < num) { \
+        size_t _newcap = MAX((size_t)initial_cap, MAX(2 * (base)->capacity, (size_t)num)); \
+        (base)->array = realloc((base)->array, sizeof(type) * _newcap); \
+        if ((base)->array == NULL) fatal("Out of memory while ensuring space for %zu elements in array of %s", (size_t)num, #type); \
+        if (zero_mem) memset((base)->array + (base)->capacity, 0, sizeof(type) * (_newcap - (base)->capacity)); \
+        (base)->capacity = _newcap; \
+    }
 
-    uint32_t parser_buf[PARSER_BUF_SZ];
-    unsigned int parser_state, parser_text_start, parser_buf_pos;
-    bool parser_has_pending_text;
-    uint8_t read_buf[READ_BUF_SZ];
+#define remove_i_from_array(array, i, count) { \
+    (count)--; \
+    if ((i) < (count)) { \
+        memmove((array) + (i), (array) + (i) + 1, sizeof((array)[0]) * ((count) - (i))); \
+    }}
 
-} Screen;
-PyTypeObject Screen_Type;
-
-#define left_shift_line(line, at, num) \
-    for(index_type __i__ = (at); __i__ < (line)->xnum - (num); __i__++) { \
-        COPY_CELL(line, __i__ + (num), line, __i__) \
-    } \
-    if ((((line)->chars[(at)] >> ATTRS_SHIFT) & WIDTH_MASK) != 1) (line)->chars[(at)] = (1 << ATTRS_SHIFT) | 32;
-
-
-// Global functions 
-Line* alloc_line();
-Cursor* alloc_cursor();
+// Global functions
+const char* base64_decode(const uint32_t *src, size_t src_sz, uint8_t *dest, size_t dest_capacity, size_t *dest_sz);
+Line* alloc_line(void);
+Cursor* alloc_cursor(void);
 LineBuf* alloc_linebuf(unsigned int, unsigned int);
-HistoryBuf* alloc_historybuf(unsigned int, unsigned int);
-ChangeTracker* alloc_change_tracker(unsigned int, unsigned int);
-int init_LineBuf(PyObject *);
-int init_HistoryBuf(PyObject *);
-int init_Cursor(PyObject *);
-int init_Line(PyObject *);
-int init_ColorProfile(PyObject *);
-int init_SpriteMap(PyObject *);
-int init_ChangeTracker(PyObject *);
-int init_Screen(PyObject *);
-int init_Face(PyObject *);
-int init_Window(PyObject *);
-PyObject* create_256_color_table();
-PyObject* read_bytes_dump(PyObject UNUSED *, PyObject *);
-PyObject* read_bytes(PyObject UNUSED *, PyObject *);
+HistoryBuf* alloc_historybuf(unsigned int, unsigned int, unsigned int);
+ColorProfile* alloc_color_profile(void);
+void copy_color_profile(ColorProfile*, ColorProfile*);
+PyObject* create_256_color_table(void);
 PyObject* parse_bytes_dump(PyObject UNUSED *, PyObject *);
 PyObject* parse_bytes(PyObject UNUSED *, PyObject *);
-uint32_t decode_utf8(uint32_t*, uint32_t*, uint8_t byte);
 void cursor_reset(Cursor*);
 Cursor* cursor_copy(Cursor*);
 void cursor_copy_to(Cursor *src, Cursor *dest);
 void cursor_reset_display_attrs(Cursor*);
-bool update_cell_range_data(ScreenModes *modes, SpriteMap *, Line *, unsigned int, unsigned int, ColorProfile *, const uint32_t, const uint32_t, unsigned int *);
-uint32_t to_color(ColorProfile *, uint32_t, uint32_t);
+void cursor_from_sgr(Cursor *self, int *params, unsigned int count);
+void apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, int *params, unsigned int count);
+const char* cell_as_sgr(const GPUCell *, const GPUCell *);
+const char* cursor_as_sgr(const Cursor *);
 
-PyObject* line_text_at(char_type, combining_type);
-void line_clear_text(Line *self, unsigned int at, unsigned int num, int ch);
-void line_apply_cursor(Line *self, Cursor *cursor, unsigned int at, unsigned int num, bool clear_char);
-void line_set_char(Line *, unsigned int , uint32_t , unsigned int , Cursor *);
-void line_right_shift(Line *, unsigned int , unsigned int );
-void line_add_combining_char(Line *, uint32_t , unsigned int );
-index_type line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen);
-unsigned int line_length(Line *self);
+PyObject* cm_thread_write(PyObject *self, PyObject *args);
+bool schedule_write_to_child(unsigned long id, unsigned int num, ...);
+bool set_iutf8(int, bool);
 
-void linebuf_init_line(LineBuf *, index_type);
-void linebuf_clear(LineBuf *, char_type ch);
-void linebuf_init_line(LineBuf *, index_type);
-void linebuf_index(LineBuf* self, index_type top, index_type bottom);
-void linebuf_reverse_index(LineBuf *self, index_type top, index_type bottom);
-void linebuf_clear_line(LineBuf *self, index_type y);
-void linebuf_insert_lines(LineBuf *self, unsigned int num, unsigned int y, unsigned int bottom);
-void linebuf_delete_lines(LineBuf *self, index_type num, index_type y, index_type bottom);
-void linebuf_set_attribute(LineBuf *, unsigned int , unsigned int );
-void linebuf_rewrap(LineBuf *self, LineBuf *other, int *cursor_y_out, HistoryBuf *);
-unsigned int linebuf_char_width_at(LineBuf *self, index_type x, index_type y);
-bool historybuf_resize(HistoryBuf *self, index_type lines);
-void historybuf_add_line(HistoryBuf *self, const Line *line);
-void historybuf_rewrap(HistoryBuf *self, HistoryBuf *other);
-void historybuf_init_line(HistoryBuf *self, index_type num, Line *l);
+color_type colorprofile_to_color(ColorProfile *self, color_type entry, color_type defval);
+float cursor_text_as_bg(ColorProfile *self);
+void copy_color_table_to_buffer(ColorProfile *self, color_type *address, int offset, size_t stride);
+bool colorprofile_push_colors(ColorProfile*, unsigned int);
+bool colorprofile_pop_colors(ColorProfile*, unsigned int);
+void colorprofile_report_stack(ColorProfile*, unsigned int*, unsigned int*);
 
-void screen_align(Screen*);
-void screen_restore_cursor(Screen *);
-void screen_save_cursor(Screen *);
-void screen_cursor_position(Screen*, unsigned int, unsigned int);
-void screen_cursor_back(Screen *self, unsigned int count/*=1*/, int move_direction/*=-1*/);
-void screen_erase_in_line(Screen *, unsigned int, bool);
-void screen_erase_in_display(Screen *, unsigned int, bool);
-void screen_draw(Screen *screen, uint32_t codepoint);
-void screen_ensure_bounds(Screen *self, bool use_margins);
-void screen_toggle_screen_buffer(Screen *self);
-void screen_normal_keypad_mode(Screen *self); 
-void screen_alternate_keypad_mode(Screen *self);  
-void screen_change_default_color(Screen *self, unsigned int which, uint32_t col);
-void screen_alignment_display(Screen *self);
-void screen_reverse_index(Screen *self);
-void screen_index(Screen *self);
-void screen_reset(Screen *self);
-void screen_set_tab_stop(Screen *self);
-void screen_tab(Screen *self);
-void screen_backtab(Screen *self, unsigned int);
-void screen_clear_tab_stop(Screen *self, unsigned int how);
-void screen_set_mode(Screen *self, unsigned int mode);
-void screen_reset_mode(Screen *self, unsigned int mode);
-void screen_insert_characters(Screen *self, unsigned int count);
-void screen_cursor_up(Screen *self, unsigned int count/*=1*/, bool do_carriage_return/*=false*/, int move_direction/*=-1*/);
-void screen_set_cursor(Screen *self, unsigned int mode, uint8_t secondary);
-void screen_cursor_to_column(Screen *self, unsigned int column);
-void screen_cursor_down(Screen *self, unsigned int count/*=1*/);
-void screen_cursor_forward(Screen *self, unsigned int count/*=1*/);
-void screen_cursor_down1(Screen *self, unsigned int count/*=1*/);
-void screen_cursor_up1(Screen *self, unsigned int count/*=1*/);
-void screen_cursor_to_line(Screen *screen, unsigned int line);
-void screen_insert_lines(Screen *self, unsigned int count/*=1*/);
-void screen_delete_lines(Screen *self, unsigned int count/*=1*/);
-void screen_delete_characters(Screen *self, unsigned int count);
-void screen_erase_characters(Screen *self, unsigned int count);
-void screen_set_margins(Screen *self, unsigned int top, unsigned int bottom);
-void screen_change_charset(Screen *, uint32_t to);
-void screen_designate_charset(Screen *, uint32_t which, uint32_t as);
-void set_title(Screen *self, PyObject*);
-void set_icon(Screen *self, PyObject*);
-void set_dynamic_color(Screen *self, unsigned int code, PyObject*);
-void set_color_table_color(Screen *self, unsigned int code, PyObject*);
-uint32_t* translation_table(uint32_t which);
-uint32_t *latin1_charset;
-void screen_request_capabilities(Screen *, PyObject *);
-void report_device_attributes(Screen *self, unsigned int UNUSED mode, bool UNUSED secondary);
-void select_graphic_rendition(Screen *self, unsigned int *params, unsigned int count);
-void report_device_status(Screen *self, unsigned int which, bool UNUSED);
-#define DECLARE_CH_SCREEN_HANDLER(name) void screen_##name(Screen *screen);
-DECLARE_CH_SCREEN_HANDLER(bell)
-DECLARE_CH_SCREEN_HANDLER(backspace)
-DECLARE_CH_SCREEN_HANDLER(tab)
-DECLARE_CH_SCREEN_HANDLER(linefeed)
-DECLARE_CH_SCREEN_HANDLER(carriage_return)
+void set_mouse_cursor(MouseShape);
+void enter_event(void);
+void mouse_event(int, int, int);
+void focus_in_event(void);
+void scroll_event(double, double, int, int);
+void on_key_input(GLFWkeyevent *ev);
+void request_window_attention(id_type, bool);
+#ifndef __APPLE__
+void play_canberra_sound(const char *which_sound, const char *event_id);
+#endif
+SPRITE_MAP_HANDLE alloc_sprite_map(unsigned int, unsigned int);
+SPRITE_MAP_HANDLE free_sprite_map(SPRITE_MAP_HANDLE);
+const char* get_hyperlink_for_id(const HYPERLINK_POOL_HANDLE, hyperlink_id_type id, bool only_url);
 
-bool init_freetype_library(PyObject*);
+void log_event(const char *format, ...) __attribute__((format(printf, 1, 2)));

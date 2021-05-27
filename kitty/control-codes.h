@@ -16,7 +16,7 @@
 // *Bell*: Beeps.
 #define BEL 0x07
 
-// *Backspace*: Backspace one column, but not past the begining of the
+// *Backspace*: Backspace one column, but not past the beginning of the
 // line.
 #define BS 0x08
 
@@ -63,11 +63,13 @@
 #define CSI 0x9b
 #define ST 0x9c
 #define OSC 0x9d
+#define PM 0x9e
+#define APC 0x9f
 
 // Sharp control codes
 // -------------------
 
-// Align display 
+// Align display
 #define DECALN '8'
 
 // Esc control codes
@@ -77,6 +79,8 @@
 #define ESC_OSC ']'
 #define ESC_CSI '['
 #define ESC_ST '\\'
+#define ESC_PM '^'
+#define ESC_APC '_'
 
 // *Reset*.
 #define ESC_RIS 'c'
@@ -106,10 +110,10 @@
 #define ESC_DECRC '8'
 
 // Set normal keypad mode
-#define ESC_DECPNM '>'
+#define ESC_DECKPNM '>'
 
 // Set alternate keypad mode
-#define ESC_DECPAM  '='
+#define ESC_DECKPAM  '='
 
 // ECMA-48 CSI sequences.
 // ---------------------
@@ -176,13 +180,16 @@
 
 // Scroll down by the specified number of lines
 #define SD 'T'
- 
+
 // *Erase character*: Erase the indicated # of characters on the
 // current line.
 #define ECH 'X'
 
 // *Horizontal position relative*: Same as :data:`CUF`.
 #define HPR 'a'
+
+// Repeat the preceding graphic character Ps times.
+#define REP 'b'
 
 // *Device Attributes*.
 #define DA 'c'
@@ -208,7 +215,7 @@
 
 // *Select graphics rendition*: The terminal can display the following
 // character attributes that change the character display without
-// changing the character 
+// changing the character
 #define SGR 'm'
 
 // *Device status report*.
@@ -216,11 +223,6 @@
 
 // Soft reset
 #define DECSTR 'p'
-
-// *Select top and bottom margins*: Selects margins, defining the
-// scrolling region; parameters are top and bottom line. If called
-// without any arguments, whole screen is used.
-#define DECSTBM 'r'
 
 // *Horizontal position adjust*: Same as :data:`CHA`.
 #define HPA '`'
@@ -230,12 +232,6 @@
 
 // Forward tab
 #define CHT 'I'
-
-// Save cursor
-#define SC 's'
-
-// Restore cursor
-#define RC 'u'
 
 // Misc sequences
 // ----------------
