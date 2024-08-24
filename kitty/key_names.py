@@ -1,14 +1,13 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2019, Kovid Goyal <kovid at kovidgoyal.net>
 
 import sys
 from contextlib import suppress
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from .constants import is_macos
 
-functional_key_name_aliases = {
+functional_key_name_aliases: dict[str, str] = {
     'ESC': 'ESCAPE',
     'PGUP': 'PAGE_UP',
     'PAGEUP': 'PAGE_UP',
@@ -25,13 +24,15 @@ functional_key_name_aliases = {
 }
 
 
-character_key_name_aliases: Dict[str, str] = {
+character_key_name_aliases: dict[str, str] = {
     'SPC': ' ',
     'SPACE': ' ',
     'STAR': '*',
     'MULTIPLY': '*',
     'PLUS': '+',
     'MINUS': '-',
+    'BAR': '|',
+    'PIPE': '|',
     'HYPHEN': '-',
     'EQUAL': '=',
     'UNDERSCORE': '_',
@@ -64,7 +65,7 @@ else:
         import ctypes
         for suffix in ('.0', ''):
             with suppress(Exception):
-                lib = ctypes.CDLL('libxkbcommon.so' + suffix)
+                lib = ctypes.CDLL(f'libxkbcommon.so{suffix}')
                 break
         else:
             from ctypes.util import find_library

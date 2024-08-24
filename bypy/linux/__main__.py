@@ -10,16 +10,12 @@ import subprocess
 import tarfile
 import time
 
-from bypy.constants import (
-    OUTPUT_DIR, PREFIX, is64bit, python_major_minor_version
-)
-from bypy.freeze import (
-    extract_extension_modules, freeze_python, path_to_freeze_dir
-)
+from bypy.constants import OUTPUT_DIR, PREFIX, python_major_minor_version
+from bypy.freeze import extract_extension_modules, freeze_python, path_to_freeze_dir
 from bypy.utils import get_dll_path, mkdtemp, py_compile, walk
 
 j = os.path.join
-arch = 'x86_64' if is64bit else 'i686'
+machine = (os.uname()[4] or '').lower()
 self_dir = os.path.dirname(os.path.abspath(__file__))
 py_ver = '.'.join(map(str, python_major_minor_version()))
 iv = globals()['init_env']
@@ -28,13 +24,17 @@ kitty_constants = iv['kitty_constants']
 
 def binary_includes():
     return tuple(map(get_dll_path, (
-            'expat', 'sqlite3', 'ffi', 'z', 'lzma', 'png16', 'lcms2', 'crypt',
-            'iconv', 'pcre', 'graphite2', 'glib-2.0', 'freetype',
+            'expat', 'sqlite3', 'ffi', 'z', 'lzma', 'png16', 'lcms2', 'ssl', 'crypto', 'crypt',
+            'iconv', 'pcre2-8', 'graphite2', 'glib-2.0', 'freetype', 'xxhash',
             'harfbuzz', 'xkbcommon', 'xkbcommon-x11',
-            'ncursesw', 'readline', 'brotlicommon', 'brotlienc', 'brotlidec'
+            # fontconfig is not bundled because in typical brain dead Linux
+            # distro fashion, different distros use different default config
+            # paths for fontconfig.
+            'ncursesw', 'readline', 'brotlicommon', 'brotlienc', 'brotlidec',
+            'wayland-client', 'wayland-cursor',
         ))) + (
-                get_dll_path('bz2', 2), get_dll_path('ssl', 2), get_dll_path('crypto', 2),
-                get_dll_path('python' + py_ver, 2),
+                get_dll_path('bz2', 2),
+                get_dll_path(f'python{py_ver}', 2),
         )
 
 
@@ -43,7 +43,7 @@ class Env:
     def __init__(self, package_dir):
         self.base = package_dir
         self.lib_dir = j(self.base, 'lib')
-        self.py_dir = j(self.lib_dir, 'python' + py_ver)
+        self.py_dir = j(self.lib_dir, f'python{py_ver}')
         os.makedirs(self.py_dir)
         self.bin_dir = j(self.base, 'bin')
         self.obj_dir = mkdtemp('launchers-')
@@ -88,11 +88,22 @@ def copy_libs(env):
     for x in binary_includes():
         dest = env.bin_dir if '/bin/' in x else env.lib_dir
         shutil.copy2(x, dest)
+        dest = os.path.join(dest, os.path.basename(x))
+        subprocess.check_call(['chrpath', '-d', dest])
+
+
+def add_ca_certs(env):
+    print('Downloading CA certs...')
+    from urllib.request import urlopen
+    cdata = urlopen(kitty_constants['cacerts_url']).read()
+    dest = os.path.join(env.lib_dir, 'cacert.pem')
+    with open(dest, 'wb') as f:
+        f.write(cdata)
 
 
 def copy_python(env):
     print('Copying python...')
-    srcdir = j(PREFIX, 'lib/python' + py_ver)
+    srcdir = j(PREFIX, f'lib/python{py_ver}')
 
     for x in os.listdir(srcdir):
         y = j(srcdir, x)
@@ -104,8 +115,7 @@ def copy_python(env):
             shutil.copy2(y, env.py_dir)
 
     srcdir = j(srcdir, 'site-packages')
-    site_packages_dir = j(env.py_dir, 'site-packages')
-    import_site_packages(srcdir, site_packages_dir)
+    import_site_packages(srcdir, env.py_dir)
 
     pdir = os.path.join(env.lib_dir, 'kitty-extensions')
     os.makedirs(pdir, exist_ok=True)
@@ -124,7 +134,8 @@ def copy_python(env):
     for x in bases:
         iv['sanitize_source_folder'](os.path.join(env.py_dir, x))
     py_compile(env.py_dir)
-    freeze_python(env.py_dir, pdir, env.obj_dir, ext_map, develop_mode_env_var='KITTY_DEVELOP_FROM')
+    freeze_python(env.py_dir, pdir, env.obj_dir, ext_map, develop_mode_env_var='KITTY_DEVELOP_FROM', remove_pyc_files=True)
+    shutil.rmtree(env.py_dir)
 
 
 def build_launcher(env):
@@ -173,23 +184,24 @@ def strip_files(files, argv_max=(256 * 1024)):
 
 
 def strip_binaries(files):
-    print('Stripping %d files...' % len(files))
+    print(f'Stripping {len(files)} files...')
     before = sum(os.path.getsize(x) for x in files)
     strip_files(files)
     after = sum(os.path.getsize(x) for x in files)
-    print('Stripped %.1f MB' % ((before - after) / (1024 * 1024.)))
+    print('Stripped {:.1f} MB'.format((before - after) / (1024 * 1024.)))
 
 
 def create_tarfile(env, compression_level='9'):
     print('Creating archive...')
     base = OUTPUT_DIR
+    arch = 'arm64' if 'arm64' in os.environ['BYPY_ARCH'] else ('i686' if 'i386' in os.environ['BYPY_ARCH'] else 'x86_64')
     try:
         shutil.rmtree(base)
     except OSError as err:
-        if err.errno != errno.ENOENT:
+        if err.errno not in (errno.ENOENT, errno.EBUSY):  # EBUSY when the directory is mountpoint
             raise
-    os.mkdir(base)
-    dist = os.path.join(base, '%s-%s-%s.tar' % (kitty_constants['appname'], kitty_constants['version'], arch))
+    os.makedirs(base, exist_ok=True)
+    dist = os.path.join(base, f'{kitty_constants["appname"]}-{kitty_constants["version"]}-{arch}.tar')
     with tarfile.open(dist, mode='w', format=tarfile.PAX_FORMAT) as tf:
         cwd = os.getcwd()
         os.chdir(env.base)
@@ -199,13 +211,14 @@ def create_tarfile(env, compression_level='9'):
         finally:
             os.chdir(cwd)
     print('Compressing archive...')
-    ans = dist.rpartition('.')[0] + '.txz'
+    ans = f'{dist.rpartition(".")[0]}.txz'
     start_time = time.time()
-    subprocess.check_call(['xz', '--threads=0', '-f', '-' + compression_level, dist])
+    threads = 4 if arch == 'i686' else 0
+    subprocess.check_call(['xz', '--verbose', f'--threads={threads}', '-f', f'-{compression_level}', dist])
     secs = time.time() - start_time
-    print('Compressed in %d minutes %d seconds' % (secs // 60, secs % 60))
-    os.rename(dist + '.xz', ans)
-    print('Archive %s created: %.2f MB' % (
+    print('Compressed in {} minutes {} seconds'.format(secs // 60, secs % 60))
+    os.rename(f'{dist}.xz', ans)
+    print('Archive {} created: {:.2f} MB'.format(
         os.path.basename(ans), os.stat(ans).st_size / (1024.**2)))
 
 
@@ -218,10 +231,13 @@ def main():
     build_launcher(env)
     files = find_binaries(env)
     fix_permissions(files)
+    add_ca_certs(env)
+    kitty_exe = os.path.join(env.base, 'bin', 'kitty')
+    iv['build_frozen_tools'](kitty_exe)
     if not args.dont_strip:
         strip_binaries(files)
     if not args.skip_tests:
-        iv['run_tests'](os.path.join(env.base, 'bin', 'kitty'))
+        iv['run_tests'](kitty_exe)
     create_tarfile(env, args.compression_level)
 
 

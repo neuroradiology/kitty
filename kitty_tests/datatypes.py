@@ -1,17 +1,25 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import sys
 import tempfile
 
-from kitty.config import build_ansi_color_table, defaults
 from kitty.fast_data_types import (
-    REVERSE, ColorProfile, Cursor as C, HistoryBuf, LineBuf,
-    parse_input_from_terminal, truncate_point_for_length, wcswidth, wcwidth
+    Color,
+    HistoryBuf,
+    LineBuf,
+    expand_ansi_c_escapes,
+    parse_input_from_terminal,
+    replace_c0_codes_except_nl_space_tab,
+    strip_csi,
+    truncate_point_for_length,
+    wcswidth,
+    wcwidth,
 )
+from kitty.fast_data_types import Cursor as C
 from kitty.rgb import to_color
-from kitty.utils import is_path_in_temp_dir, sanitize_title
+from kitty.utils import is_ok_to_read_image_file, is_path_in_temp_dir, sanitize_title, sanitize_url_for_dispay_to_user, shlex_split_with_positions
 
 from . import BaseTest, filled_cursor, filled_history_buf, filled_line_buf
 
@@ -19,22 +27,37 @@ from . import BaseTest, filled_cursor, filled_history_buf, filled_line_buf
 def create_lbuf(*lines):
     maxw = max(map(len, lines))
     ans = LineBuf(len(lines), maxw)
-    prev_full_length = False
     for i, l0 in enumerate(lines):
         ans.line(i).set_text(l0, 0, len(l0), C())
-        ans.set_continued(i, prev_full_length)
-        prev_full_length = len(l0) == maxw
+        if i > 0:
+            ans.set_continued(i, len(lines[i-1]) == maxw)
     return ans
 
 
 class TestDataTypes(BaseTest):
 
+
+    def test_replace_c0_codes(self):
+        def t(x: str, expected: str):
+            q = replace_c0_codes_except_nl_space_tab(x)
+            self.ae(expected, q)
+            q = replace_c0_codes_except_nl_space_tab(x.encode('utf-8'))
+            self.ae(expected.encode('utf-8'), q)
+        t('abc', 'abc')
+        t('a\0\x01b\x03\x04\t\rc', 'a\u2400\u2401b\u2403\u2404\t\u240dc')
+        t('a\0\x01😸\x03\x04\t\rc', 'a\u2400\u2401😸\u2403\u2404\t\u240dc')
+        t('a\nb\tc d', 'a\nb\tc d')
+
     def test_to_color(self):
         for x in 'xxx #12 #1234 rgb:a/b'.split():
             self.assertIsNone(to_color(x))
 
-        def c(spec, r=0, g=0, b=0):
-            self.ae(tuple(to_color(spec)), (r, g, b))
+        def c(spec, r=0, g=0, b=0, a=0):
+            c = to_color(spec)
+            self.ae(c.red, r)
+            self.ae(c.green, g)
+            self.ae(c.blue, b)
+            self.ae(c.alpha, a)
 
         c('#eee', 0xee, 0xee, 0xee)
         c('#234567', 0x23, 0x45, 0x67)
@@ -43,6 +66,15 @@ class TestDataTypes(BaseTest):
         c('rgb:23/45/67', 0x23, 0x45, 0x67)
         c('rgb:abc/abc/def', 0xab, 0xab, 0xde)
         c('red', 0xff)
+        self.ae(int(Color(1, 2, 3)), 0x10203)
+        base = Color(12, 12, 12)
+        a = Color(23, 23, 23)
+        b = Color(100, 100, 100)
+        self.assertLess(base.contrast(a), base.contrast(b))
+        self.ae(Color(1, 2, 3).as_sgr, ':2:1:2:3')
+        self.ae(Color(1, 2, 3).as_sharp, '#010203')
+        self.ae(Color(1, 2, 3, 4).as_sharp, '#04010203')
+        self.ae(Color(1, 2, 3, 4).rgb, 0x10203)
 
     def test_linebuf(self):
         old = filled_line_buf(2, 3, filled_cursor())
@@ -51,7 +83,7 @@ class TestDataTypes(BaseTest):
         self.ae(new.line(0), old.line(1))
         new.clear()
         self.ae(str(new.line(0)), '')
-        old.set_attribute(REVERSE, False)
+        old.set_attribute('reverse', False)
         for y in range(old.ynum):
             for x in range(old.xnum):
                 l0 = old.line(y)
@@ -59,9 +91,9 @@ class TestDataTypes(BaseTest):
                 self.assertFalse(c.reverse)
                 self.assertTrue(c.bold)
         self.assertFalse(old.is_continued(0))
-        old.set_continued(0, True)
-        self.assertTrue(old.is_continued(0))
-        self.assertFalse(old.is_continued(1))
+        old.set_continued(1, True)
+        self.assertTrue(old.is_continued(1))
+        self.assertFalse(old.is_continued(0))
 
         lb = filled_line_buf(5, 5, filled_cursor())
         lb2 = LineBuf(5, 5)
@@ -170,9 +202,11 @@ class TestDataTypes(BaseTest):
         l0.add_combining_char(0, '\U000e0100')
         self.ae(l0[0], ' \u0300\U000e0100')
         l0.add_combining_char(0, '\u0302')
-        self.ae(l0[0], ' \u0300\u0302')
+        self.ae(l0[0], ' \u0300\U000e0100\u0302')
+        l0.add_combining_char(0, '\u0301')
+        self.ae(l0[0], ' \u0300\U000e0100\u0301')
         self.ae(l0[1], '\0')
-        self.ae(str(l0), ' \u0300\u0302')
+        self.ae(str(l0), ' \u0300\U000e0100\u0301')
         t = 'Testing with simple text'
         lb = LineBuf(2, len(t))
         l0 = lb.line(0)
@@ -243,9 +277,13 @@ class TestDataTypes(BaseTest):
         l0 = create('file:///etc/test')
         self.ae(l0.url_start_at(0), 0)
 
-        for trail in '.,]>)\\':
+        for trail in '.,\\}]>':
             lx = create("http://xyz.com" + trail)
             self.ae(lx.url_end_at(0), len(lx) - 2)
+        for trail in ')':
+            turl = "http://xyz.com" + trail
+            lx = create(turl)
+            self.ae(len(lx) - 1, lx.url_end_at(0), repr(turl))
         l0 = create("ftp://abc/")
         self.ae(l0.url_end_at(0), len(l0) - 1)
         l2 = create("http://-abcd] ")
@@ -366,9 +404,12 @@ class TestDataTypes(BaseTest):
         self.ae(wcswidth('\U0001F1E6a\U0001F1E8a'), 6)
         self.ae(wcswidth('\U0001F1E6\U0001F1E8a'), 3)
         self.ae(wcswidth('\U0001F1E6\U0001F1E8\U0001F1E6'), 4)
+        self.ae(wcswidth('a\u00adb'), 2)
         # Regional indicator symbols (unicode flags) are defined as having
-        # Emoji_Presentation so must have width 2
+        # Emoji_Presentation so must have width 2 but combined must have
+        # width 2 not 4
         self.ae(tuple(map(w, '\U0001f1ee\U0001f1f3')), (2, 2))
+        self.ae(wcswidth('\U0001f1ee\U0001f1f3'), 2)
         tpl = truncate_point_for_length
         self.ae(tpl('abc', 4), 3)
         self.ae(tpl('abc', 2), 2)
@@ -376,8 +417,9 @@ class TestDataTypes(BaseTest):
         self.ae(tpl('a\U0001f337', 2), 1)
         self.ae(tpl('a\U0001f337', 3), 2)
         self.ae(tpl('a\U0001f337b', 4), 3)
-        self.ae(sanitize_title('a\0\01 \t\n\f\rb'), 'a b')
         self.ae(tpl('a\x1b[31mbc', 2), 7)
+
+        self.ae(sanitize_title('a\0\01 \t\n\f\rb'), 'a b')
 
         def tp(*data, leftover='', text='', csi='', apc='', ibp=False):
             text_r, csi_r, apc_r, rest = [], [], [], []
@@ -414,14 +456,23 @@ class TestDataTypes(BaseTest):
                 self.assertTrue(is_path_in_temp_dir(os.path.join(prefix, path)))
         for path in ('/home/xy/d.png', '/tmp/../home/x.jpg'):
             self.assertFalse(is_path_in_temp_dir(os.path.join(path)))
-
-    def test_color_profile(self):
-        c = ColorProfile()
-        c.update_ansi_color_table(build_ansi_color_table())
-        for i in range(8):
-            col = getattr(defaults, 'color{}'.format(i))
-            self.assertEqual(c.as_color(i << 8 | 1), (col[0], col[1], col[2]))
-        self.ae(c.as_color(255 << 8 | 1), (0xee, 0xee, 0xee))
+        for path in ('/proc/self/cmdline', os.devnull):
+            if os.path.exists(path):
+                with open(path) as pf:
+                    self.assertFalse(is_ok_to_read_image_file(path, pf.fileno()), path)
+        fifo = os.path.join(tempfile.gettempdir(), 'test-kitty-fifo')
+        os.mkfifo(fifo)
+        fifo_fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            self.assertFalse(is_ok_to_read_image_file(fifo, fifo_fd), fifo)
+        finally:
+            os.close(fifo_fd)
+            os.remove(fifo)
+        if os.path.isdir('/dev/shm'):
+            with tempfile.NamedTemporaryFile(dir='/dev/shm') as tf:
+                self.assertTrue(is_ok_to_read_image_file(tf.name, tf.fileno()), fifo)
+        self.ae(sanitize_url_for_dispay_to_user(
+            'h://a\u0430b.com/El%20Ni%C3%B1o/'), 'h://xn--ab-7kc.com/El Niño/')
 
     def test_historybuf(self):
         lb = filled_line_buf()
@@ -495,7 +546,7 @@ class TestDataTypes(BaseTest):
         self.ae(l2.as_ansi(), '\x1b[1;2;3;7;9;34;48:2:1:2:3;58:5:5m' '1'
                 '\x1b[22;23;27;29;39;49;59m' '0000')
         lb = filled_line_buf()
-        for i in range(lb.ynum):
+        for i in range(1, lb.ynum + 1):
             lb.set_continued(i, True)
         a = []
         lb.as_ansi(a.append)
@@ -504,3 +555,99 @@ class TestDataTypes(BaseTest):
         a = []
         hb.as_ansi(a.append)
         self.ae(a, [str(hb.line(i)) + '\n' for i in range(hb.count - 1, -1, -1)])
+
+    def test_strip_csi(self):
+        def q(x, y=''):
+            self.ae(y or x, strip_csi(x))
+        q('test')
+        q('a\x1bbc', 'ac')
+        q('a\x1b[bc', 'ac')
+        q('a\x1b[12;34:43mbc', 'abc')
+
+    def test_single_key(self):
+        from kitty.fast_data_types import GLFW_MOD_KITTY, GLFW_MOD_SHIFT, SingleKey
+        for m in (GLFW_MOD_KITTY, GLFW_MOD_SHIFT):
+            s = SingleKey(mods=m)
+            self.ae(s.mods, m)
+        self.ae(tuple(iter(SingleKey())), (0, False, 0))
+        self.ae(tuple(SingleKey(key=sys.maxunicode, mods=GLFW_MOD_SHIFT, is_native=True)), (GLFW_MOD_SHIFT, True, sys.maxunicode))
+        self.ae(repr(SingleKey()), 'SingleKey()')
+        self.ae(repr(SingleKey(key=23, mods=2, is_native=True)), 'SingleKey(mods=2, is_native=True, key=23)')
+        self.ae(repr(SingleKey(key=23, mods=2)), 'SingleKey(mods=2, key=23)')
+        self.ae(repr(SingleKey(key=23)), 'SingleKey(key=23)')
+        self.ae(repr(SingleKey(key=0x1008ff57)), 'SingleKey(key=269025111)')
+        self.ae(repr(SingleKey(key=23)._replace(mods=2)), 'SingleKey(mods=2, key=23)')
+        self.ae(repr(SingleKey(key=23)._replace(key=-1, mods=GLFW_MOD_KITTY)), f'SingleKey(mods={GLFW_MOD_KITTY})')
+        self.assertEqual(SingleKey(key=1), SingleKey(key=1))
+        self.assertEqual(hash(SingleKey(key=1)), hash(SingleKey(key=1)))
+        self.assertNotEqual(hash(SingleKey(key=1, mods=2)), hash(SingleKey(key=1)))
+        self.assertNotEqual(SingleKey(key=1, mods=2), SingleKey(key=1))
+
+    def test_notify_identifier_sanitization(self):
+        from kitty.notifications import sanitize_identifier_pat
+        self.ae(sanitize_identifier_pat().sub('', '\x1b\nabc\n[*'), 'abc')
+
+    def test_bracketed_paste_sanitizer(self):
+        from kitty.utils import sanitize_for_bracketed_paste
+        for x in ('\x1b[201~ab\x9b201~cd', '\x1b[201\x1b[201~~ab'):  # ]]]
+            q = sanitize_for_bracketed_paste(x.encode('utf-8'))
+            self.assertNotIn(b'\x1b[201~', q)
+            self.assertNotIn('\x9b201~'.encode(), q)
+            self.assertIn(b'ab', q)
+
+    def test_expand_ansi_c_escapes(self):
+        for src, expected in {
+            'abc': 'abc',
+            r'a\ab': 'a\ab',
+            r'a\eb': 'a\x1bb',
+            r'a\r\nb': 'a\r\nb',
+            r'a\c b': 'a\0b',
+            r'a\c': 'a\\c',
+            r'a\x1bb': 'a\x1bb',
+            r'a\x1b': 'a\x1b',
+            r'a\x1': 'a\x01',
+            r'a\x1g': 'a\x01g',
+            r'a\z\"': 'a\\z"',
+            r'a\123b': 'a\123b',
+            r'a\128b': 'a\0128b',
+            r'a\u1234e': 'a\u1234e',
+            r'a\U1f1eez': 'a\U0001f1eez',
+            r'a\x1\\':    "a\x01\\",
+        }.items():
+            actual = expand_ansi_c_escapes(src)
+            self.ae(expected, actual)
+
+    def test_shlex_split(self):
+        for bad in (
+            'abc\\', '\\', "'abc", "'", '"', 'asd' + '\\', r'"a\"', '"a\\',
+        ):
+            with self.assertRaises(ValueError, msg=f'Failed to raise exception for {bad!r}'):
+                tuple(shlex_split_with_positions(bad))
+
+        for q, expected in {
+            '"ab"': ((0, 'ab'),),
+            r'x "ab"y \m': ((0, 'x'), (2, 'aby'), (8, 'm')),
+            r'''x'y"\z'1''': ((0, 'xy"\\z1'),),
+            r'\abc\ d': ((0, 'abc d'),),
+            '': (), '   ': (), ' \tabc\n\t\r ': ((2, 'abc'),),
+            "$'ab'": ((0, '$ab'),),
+        }.items():
+            actual = tuple(shlex_split_with_positions(q))
+            self.ae(expected, actual, f'Failed for text: {q!r}')
+
+        for q, expected in {
+            "$'ab'": ((0, 'ab'),),
+            "1$'ab'": ((0, '1ab'),),
+            '''"1$'ab'"''': ((0, "1$'ab'"),),
+            r"$'a\123b'": ((0, 'a\123b'),),
+            r"$'a\1b'": ((0, 'a\001b'),),
+            r"$'a\12b'": ((0, 'a\012b'),),
+            r"$'a\db'": ((0, 'adb'),),
+            r"$'a\x1bb'": ((0, 'a\x1bb'),),
+            r"$'\u123z'": ((0, '\u0123z'),),
+            r"$'\U0001F1E8'": ((0, '\U0001F1E8'),),
+            r"$'\U1F1E8'": ((0, '\U0001F1E8'),),
+            r"$'a\U1F1E8'b": ((0, 'a\U0001F1E8b'),),
+        }.items():
+            actual = tuple(shlex_split_with_positions(q, True))
+            self.ae(expected, actual, f'Failed for text: {q!r}')

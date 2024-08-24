@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 from typing import Callable, Tuple
@@ -7,13 +6,14 @@ from typing import Callable, Tuple
 from kitty.fast_data_types import truncate_point_for_length, wcswidth
 from kitty.key_encoding import EventType, KeyEvent
 
-from .operations import RESTORE_CURSOR, SAVE_CURSOR, move_cursor_by
+from .operations import RESTORE_CURSOR, SAVE_CURSOR, move_cursor_by, set_cursor_shape
 
 
 class LineEdit:
 
-    def __init__(self) -> None:
+    def __init__(self, is_password: bool = False) -> None:
         self.clear()
+        self.is_password = is_password
 
     def clear(self) -> None:
         self.current_input = ''
@@ -30,7 +30,10 @@ class LineEdit:
         if self.pending_bell:
             write('\a')
             self.pending_bell = False
-        text = prompt + self.current_input
+        ci = self.current_input
+        if self.is_password:
+            ci = '*' * wcswidth(ci)
+        text = prompt + ci
         cursor_pos = self.cursor_pos + wcswidth(prompt)
         if screen_cols:
             write(SAVE_CURSOR + text + RESTORE_CURSOR)
@@ -48,6 +51,7 @@ class LineEdit:
             write('\r')
             if cursor_pos:
                 write(move_cursor_by(cursor_pos, 'right'))
+            write(set_cursor_shape('beam'))
 
     def add_text(self, text: str) -> None:
         if self.current_input:
@@ -132,20 +136,20 @@ class LineEdit:
     def on_key(self, key_event: KeyEvent) -> bool:
         if key_event.type is EventType.RELEASE:
             return False
-        if key_event.matches('home'):
+        if key_event.matches('home') or key_event.matches('ctrl+a'):
             return self.home()
-        if key_event.matches('end'):
+        if key_event.matches('end') or key_event.matches('ctrl+e'):
             return self.end()
         if key_event.matches('backspace'):
             self.backspace()
             return True
-        if key_event.matches('delete'):
+        if key_event.matches('delete') or key_event.matches('ctrl+d'):
             self.delete()
             return True
-        if key_event.matches('left'):
+        if key_event.matches('left') or key_event.matches('ctrl+b'):
             self.left()
             return True
-        if key_event.matches('right'):
+        if key_event.matches('right') or key_event.matches('ctrl+f'):
             self.right()
             return True
         return False

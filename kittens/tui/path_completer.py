@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 
@@ -133,6 +132,7 @@ class PathCompleter:
             options = self.cache[text] = tuple(find_completions(text))
         if options and state < len(options):
             return options[state]
+        return None
 
     def __exit__(self, *a: Any) -> bool:
         import readline
@@ -144,6 +144,11 @@ class PathCompleter:
     def input(self) -> str:
         with self:
             return input(self.prompt)
+        return ''
+
+
+def get_path(prompt: str = '> ') -> str:
+    return PathCompleter(prompt).input()
 
 
 def develop() -> None:

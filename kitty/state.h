@@ -6,33 +6,52 @@
 
 #pragma once
 #include "data-types.h"
+#include "animation.h"
 #include "screen.h"
 #include "monotonic.h"
+#include "window_logo.h"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#include <hb.h>
+#pragma GCC diagnostic pop
 
 #define OPT(name) global_state.opts.name
+#define debug_rendering(...) if (global_state.debug_rendering) { timed_debug_print(__VA_ARGS__); }
+#define debug_input(...) if (OPT(debug_keyboard)) { timed_debug_print(__VA_ARGS__); }
+#define debug_fonts(...) if (global_state.debug_font_fallback) { timed_debug_print(__VA_ARGS__); }
 
 typedef enum { LEFT_EDGE, TOP_EDGE, RIGHT_EDGE, BOTTOM_EDGE } Edge;
-typedef enum { RESIZE_DRAW_STATIC, RESIZE_DRAW_SCALED, RESIZE_DRAW_BLANK, RESIZE_DRAW_SIZE } ResizeDrawStrategy;
 typedef enum { REPEAT_MIRROR, REPEAT_CLAMP, REPEAT_DEFAULT } RepeatStrategy;
+typedef enum { WINDOW_NORMAL, WINDOW_FULLSCREEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED } WindowState;
 
 typedef struct {
     char_type string[16];
     size_t len;
 } UrlPrefix;
 
+typedef enum AdjustmentUnit { POINT = 0, PERCENT = 1, PIXEL = 2 } AdjustmentUnit;
+typedef enum UnderlineHyperlinks { UNDERLINE_ON_HOVER = 0, UNDERLINE_ALWAYS = 1, UNDERLINE_NEVER = 2 } UnderlineHyperlinks;
+
+struct MenuItem {
+    const char* *location;
+    size_t location_count;
+    const char *definition;
+};
+
 typedef struct {
     monotonic_t visual_bell_duration, cursor_blink_interval, cursor_stop_blinking_after, mouse_hide_wait, click_interval;
     double wheel_scroll_multiplier, touch_scroll_multiplier;
+    int wheel_scroll_min_lines;
     bool enable_audio_bell;
-    CursorShape cursor_shape;
+    CursorShape cursor_shape, cursor_shape_unfocused;
     float cursor_beam_thickness;
     float cursor_underline_thickness;
     unsigned int url_style;
     unsigned int scrollback_pager_history_size;
     bool scrollback_fill_enlarged_window;
-    char_type select_by_word_characters[256]; size_t select_by_word_characters_count;
-    color_type url_color, background, foreground, active_border_color, inactive_border_color, bell_border_color;
-    color_type mark1_foreground, mark1_background, mark2_foreground, mark2_background, mark3_foreground, mark3_background;
+    char_type *select_by_word_characters;
+    char_type *select_by_word_characters_forward;
+    color_type url_color, background, foreground, active_border_color, inactive_border_color, bell_border_color, tab_bar_background, tab_bar_margin_color;
     monotonic_t repaint_delay, input_delay;
     bool focus_follows_mouse;
     unsigned int hide_window_decorations;
@@ -40,14 +59,17 @@ typedef struct {
     unsigned int macos_option_as_alt;
     float macos_thicken_font;
     WindowTitleIn macos_show_window_title_in;
-    int adjust_line_height_px, adjust_column_width_px;
-    float adjust_line_height_frac, adjust_column_width_frac;
-    float background_opacity, dim_opacity;
+    char *bell_path, *bell_theme;
+    float background_opacity, dim_opacity, scrollback_indicator_opacity;
+    float text_contrast, text_gamma_adjustment;
+    bool text_old_gamma;
 
-    char* background_image;
+    char *background_image, *default_window_logo;
     BackgroundImageLayout background_image_layout;
+    ImageAnchorPosition window_logo_position;
     bool background_image_linear;
-    float background_tint;
+    float background_tint, background_tint_gaps, window_logo_alpha;
+    struct { float width, height; } window_logo_scale;
 
     bool dynamic_background_opacity;
     float inactive_text_alpha;
@@ -55,14 +77,13 @@ typedef struct {
     unsigned long tab_bar_min_tabs;
     DisableLigature disable_ligatures;
     bool force_ltr;
-    ResizeDrawStrategy resize_draw_strategy;
     bool resize_in_steps;
     bool sync_to_monitor;
     bool close_on_child_death;
     bool window_alert_on_bell;
     bool debug_keyboard;
     bool allow_hyperlinks;
-    monotonic_t resize_debounce_time;
+    struct { monotonic_t on_end, on_pause; } resize_debounce_time;
     MouseShape pointer_shape_when_grabbed;
     MouseShape default_pointer_shape;
     MouseShape pointer_shape_when_dragging;
@@ -70,14 +91,49 @@ typedef struct {
         UrlPrefix *values;
         size_t num, max_prefix_len;
     } url_prefixes;
+    char_type *url_excluded_characters;
     bool detect_urls;
+    bool tab_bar_hidden;
+    double font_size;
+    struct {
+        double outer, inner;
+    } tab_bar_margin_height;
+    long macos_menubar_title_max_length;
+    int macos_colorspace;
+    struct {
+        float val; AdjustmentUnit unit;
+    } underline_position, underline_thickness, strikethrough_position, strikethrough_thickness, cell_width, cell_height, baseline;
+    bool show_hyperlink_targets;
+    UnderlineHyperlinks underline_hyperlinks;
+    int background_blur;
+    long macos_titlebar_color;
+    unsigned long wayland_titlebar_color;
+    struct { struct MenuItem *entries; size_t count; } global_menu;
+    bool wayland_enable_ime;
+    struct {
+        size_t num;
+        struct {
+            const char *psname;
+            size_t num;
+            hb_feature_t *features;
+        } *entries;
+    } font_features;
+    struct { Animation *cursor, *visual_bell; } animation;
 } Options;
 
+typedef struct WindowLogoRenderData {
+    window_logo_id_t id;
+    WindowLogo *instance;
+    ImageAnchorPosition position;
+    float alpha;
+    bool using_default;
+} WindowLogoRenderData;
+
 typedef struct {
-    ssize_t vao_idx, gvao_idx;
+    ssize_t vao_idx;
     float xstart, ystart, dx, dy;
     Screen *screen;
-} ScreenRenderData;
+} WindowRenderData;
 
 typedef struct {
     unsigned int left, top, right, bottom;
@@ -87,6 +143,7 @@ typedef struct {
     monotonic_t at;
     int button, modifiers;
     double x, y;
+    unsigned long num;
 } Click;
 
 #define CLICK_QUEUE_SZ 3
@@ -95,18 +152,40 @@ typedef struct {
     unsigned int length;
 } ClickQueue;
 
+typedef struct MousePosition {
+    unsigned int cell_x, cell_y;
+    double global_x, global_y;
+    bool in_left_half_of_cell;
+} MousePosition;
+
+typedef struct PendingClick {
+    id_type window_id;
+    int button, count, modifiers;
+    bool grabbed;
+    monotonic_t at;
+    MousePosition mouse_pos;
+    unsigned long press_num;
+    double radius_for_multiclick;
+} PendingClick;
+
+
+typedef struct WindowBarData {
+    unsigned width, height;
+    uint8_t *buf;
+    PyObject *last_drawn_title_object_id;
+    hyperlink_id_type hyperlink_id_for_title_object;
+    bool needs_render;
+} WindowBarData;
+
 typedef struct {
     id_type id;
-    bool visible, cursor_visible_at_last_render;
-    unsigned int last_cursor_x, last_cursor_y;
+    bool visible;
+    float cursor_opacity_at_last_render;
     CursorShape last_cursor_shape;
     PyObject *title;
-    ScreenRenderData render_data;
-    struct {
-        unsigned int cell_x, cell_y;
-        double x, y;
-        bool in_left_half_of_cell;
-    } mouse_pos;
+    WindowRenderData render_data;
+    WindowLogoRenderData window_logo;
+    MousePosition mouse_pos;
     struct {
         unsigned int left, top, right, bottom;
     } padding;
@@ -114,10 +193,16 @@ typedef struct {
     ClickQueue click_queues[8];
     monotonic_t last_drag_scroll_at;
     uint32_t last_special_key_pressed;
+    WindowBarData title_bar_data, url_target_bar_data;
+    struct {
+        PendingClick *clicks;
+        size_t num, capacity;
+    } pending_clicks;
 } Window;
 
 typedef struct {
-    uint32_t left, top, right, bottom, color;
+    float left, top, right, bottom;
+    uint32_t color;
 } BorderRect;
 
 typedef struct {
@@ -134,11 +219,6 @@ typedef struct {
     BorderRects border_rects;
 } Tab;
 
-typedef struct {
-    int x, y, w, h;
-    bool is_set;
-} OSWindowGeometry;
-
 enum RENDER_STATE { RENDER_FRAME_NOT_REQUESTED, RENDER_FRAME_REQUESTED, RENDER_FRAME_READY };
 typedef enum { NO_CLOSE_REQUESTED, CONFIRMABLE_CLOSE_REQUESTED, CLOSE_BEING_CONFIRMED, IMPERATIVE_CLOSE_REQUESTED } CloseRequest;
 
@@ -150,32 +230,50 @@ typedef struct {
     unsigned int width, height, num_of_resize_events;
 } LiveResizeInfo;
 
+typedef struct WindowChromeState {
+    color_type color;
+    bool use_system_color;
+    unsigned system_color;
+    int background_blur;
+    unsigned hide_window_decorations;
+    bool show_title_in_titlebar;
+    bool resizable;
+    int macos_colorspace;
+    float background_opacity;
+} WindowChromeState;
 
 typedef struct {
     void *handle;
     id_type id;
-    uint32_t offscreen_framebuffer;
-    OSWindowGeometry before_fullscreen;
+    monotonic_t created_at;
+    struct {
+        int x, y, w, h;
+        bool is_set, was_maximized;
+    } before_fullscreen;
     int viewport_width, viewport_height, window_width, window_height;
     double viewport_x_ratio, viewport_y_ratio;
     Tab *tabs;
     BackgroundImage *bgimage;
     unsigned int active_tab, num_tabs, capacity, last_active_tab, last_num_tabs, last_active_window_id;
     bool focused_at_last_render, needs_render;
-    ScreenRenderData tab_bar_render_data;
+    WindowRenderData tab_bar_render_data;
+    struct {
+        color_type left, right;
+    } tab_bar_edge_color;
     bool tab_bar_data_updated;
     bool is_focused;
     monotonic_t cursor_blink_zero_time, last_mouse_activity_at;
+    bool has_received_cursor_pos_event;
     double mouse_x, mouse_y;
-    double logical_dpi_x, logical_dpi_y, font_sz_in_pts;
     bool mouse_button_pressed[32];
     PyObject *window_title;
+    bool disallow_title_changes, title_is_overriden;
     bool viewport_size_dirty, viewport_updated_at_least_once;
+    monotonic_t viewport_resized_at;
     LiveResizeInfo live_resize;
-    bool has_pending_resizes, is_semi_transparent, shown_once, is_damaged;
-    uint32_t offscreen_texture_id;
-    unsigned int clear_count;
-    color_type last_titlebar_color;
+    bool has_pending_resizes, is_semi_transparent, shown_once, ignore_resize_events;
+    unsigned int clear_count, redraw_count;
+    WindowChromeState last_window_chrome;
     float background_opacity;
     FONTS_DATA_HANDLE fonts_data;
     id_type temp_font_group_id;
@@ -183,7 +281,6 @@ typedef struct {
     monotonic_t last_render_frame_received_at;
     uint64_t render_calls;
     id_type last_focused_counter;
-    ssize_t gvao_idx;
     CloseRequest close_request;
 } OSWindow;
 
@@ -201,14 +298,15 @@ typedef struct {
     bool has_render_frames;
     bool debug_rendering, debug_font_fallback;
     bool has_pending_resizes, has_pending_closes;
-    bool in_sequence_mode;
-    bool tab_bar_hidden;
     bool check_for_active_animated_images;
-    double font_sz_in_pts;
     struct { double x, y; } default_dpi;
-    id_type active_drag_in_window;
-    int active_drag_button;
+    id_type active_drag_in_window, tracked_drag_in_window;
+    int active_drag_button, tracked_drag_button;
     CloseRequest quit_request;
+    bool redirect_mouse_handling;
+    WindowLogoTable *all_window_logos;
+    int gl_version;
+    PyObject *options_object;
 } GlobalState;
 
 extern GlobalState global_state;
@@ -222,10 +320,15 @@ extern GlobalState global_state;
 void gl_init(void);
 void remove_vao(ssize_t vao_idx);
 bool remove_os_window(id_type os_window_id);
-void make_os_window_context_current(OSWindow *w);
+void* make_os_window_context_current(OSWindow *w);
+void set_os_window_size(OSWindow *os_window, int x, int y);
+void get_os_window_size(OSWindow *os_window, int *w, int *h, int *fw, int *fh);
+void get_os_window_pos(OSWindow *os_window, int *x, int *y);
+void set_os_window_pos(OSWindow *os_window, int x, int y);
+void get_os_window_content_scale(OSWindow *os_window, double *xdpi, double *ydpi, float *xscale, float *yscale);
 void update_os_window_references(void);
 void mark_os_window_for_close(OSWindow* w, CloseRequest cr);
-void update_os_window_viewport(OSWindow *window, bool);
+void update_os_window_viewport(OSWindow *window, bool notify_boss);
 bool should_os_window_be_rendered(OSWindow* w);
 void wakeup_main_loop(void);
 void swap_window_buffers(OSWindow *w);
@@ -233,9 +336,11 @@ bool make_window_context_current(id_type);
 void hide_mouse(OSWindow *w);
 bool is_mouse_hidden(OSWindow *w);
 void destroy_os_window(OSWindow *w);
-void focus_os_window(OSWindow *w, bool also_raise);
+void focus_os_window(OSWindow *w, bool also_raise, const char *activation_token);
+void run_with_activation_token_in_os_window(OSWindow *w, PyObject *callback);
 void set_os_window_title(OSWindow *w, const char *title);
 OSWindow* os_window_for_kitty_window(id_type);
+OSWindow* os_window_for_id(id_type);
 OSWindow* add_os_window(void);
 OSWindow* current_os_window(void);
 void os_window_regions(OSWindow*, Region *main, Region *tab_bar);
@@ -244,9 +349,9 @@ void draw_borders(ssize_t vao_idx, unsigned int num_border_rects, BorderRect *re
 ssize_t create_cell_vao(void);
 ssize_t create_graphics_vao(void);
 ssize_t create_border_vao(void);
-bool send_cell_data_to_gpu(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *);
-void draw_cells(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *, bool, bool);
-void draw_centered_alpha_mask(OSWindow *w, size_t screen_width, size_t screen_height, size_t width, size_t height, uint8_t *canvas);
+bool send_cell_data_to_gpu(ssize_t, float, float, float, float, Screen *, OSWindow *);
+void draw_cells(ssize_t, const WindowRenderData*, OSWindow *, bool, bool, bool, Window*);
+void draw_centered_alpha_mask(OSWindow *w, size_t screen_width, size_t screen_height, size_t width, size_t height, uint8_t *canvas, float);
 void update_surface_size(int, int, uint32_t);
 void free_texture(uint32_t*);
 void free_framebuffer(uint32_t*);
@@ -254,28 +359,11 @@ void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool, boo
 void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, unsigned int, unsigned int, unsigned int, pixel*);
 void blank_canvas(float, color_type);
 void blank_os_window(OSWindow *);
-void set_titlebar_color(OSWindow *w, color_type color, bool use_system_color);
+void set_os_window_chrome(OSWindow *w);
 FONTS_DATA_HANDLE load_fonts_data(double, double, double);
 void send_prerendered_sprites_for_window(OSWindow *w);
 #ifdef __APPLE__
-void get_cocoa_key_equivalent(uint32_t, int, char *key, size_t key_sz, int*);
-typedef enum {
-    NO_COCOA_PENDING_ACTION = 0,
-    PREFERENCES_WINDOW = 1,
-    NEW_OS_WINDOW = 2,
-    NEW_OS_WINDOW_WITH_WD = 4,
-    NEW_TAB_WITH_WD = 8,
-    CLOSE_OS_WINDOW = 16,
-    CLOSE_TAB = 32,
-    NEW_TAB = 64,
-    NEXT_TAB = 128,
-    PREVIOUS_TAB = 256,
-    DETACH_TAB = 512,
-    OPEN_FILE = 1024,
-    NEW_WINDOW = 2048,
-    CLOSE_WINDOW = 4096,
-} CocoaPendingAction;
-void set_cocoa_pending_action(CocoaPendingAction action, const char*);
+#include "cocoa_window.h"
 #endif
 void request_frame_render(OSWindow *w);
 void request_tick_callback(void);
@@ -291,8 +379,24 @@ void set_os_window_title_from_window(Window *w, OSWindow *os_window);
 void update_os_window_title(OSWindow *os_window);
 void fake_scroll(Window *w, int amount, bool upwards);
 Window* window_for_window_id(id_type kitty_window_id);
-void mouse_open_url(Window *w);
+bool mouse_open_url(Window *w);
+bool mouse_set_last_visited_cmd_output(Window *w);
+bool mouse_select_cmd_output(Window *w);
+bool move_cursor_to_mouse_if_at_shell_prompt(Window *w);
 void mouse_selection(Window *w, int code, int button);
 const char* format_mods(unsigned mods);
-void send_pending_click_to_window_id(id_type, void*);
-void send_pending_click_to_window(Window*, void*);
+void dispatch_pending_clicks(id_type, void*);
+void send_pending_click_to_window(Window*, int);
+void get_platform_dependent_config_values(void *glfw_window);
+bool draw_window_title(OSWindow *window, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height);
+uint8_t* draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_height);
+bool is_os_window_fullscreen(OSWindow *);
+void update_ime_focus(OSWindow* osw, bool focused);
+void update_ime_position(Window* w, Screen *screen);
+bool update_ime_position_for_window(id_type window_id, bool force, int update_focus);
+void set_ignore_os_keyboard_processing(bool enabled);
+void update_menu_bar_title(PyObject *title UNUSED);
+void change_live_resize_state(OSWindow*, bool);
+bool render_os_window(OSWindow *w, monotonic_t now, bool ignore_render_frames, bool scan_for_animated_images);
+void update_mouse_pointer_shape(void);
+void adjust_window_size_for_csd(OSWindow *w, int width, int height, int *adjusted_width, int *adjusted_height);

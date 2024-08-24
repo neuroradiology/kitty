@@ -11,7 +11,7 @@
 #define CMD_BUF_SZ 2048
 
 
-static inline bool
+static bool
 append_buf(char buf[CMD_BUF_SZ], size_t *pos, PyObject *ans) {
     if (*pos) {
         PyObject *bytes = PyBytes_FromStringAndSize(buf, *pos);
@@ -24,7 +24,7 @@ append_buf(char buf[CMD_BUF_SZ], size_t *pos, PyObject *ans) {
     return true;
 }
 
-static inline bool
+static bool
 add_char(char buf[CMD_BUF_SZ], size_t *pos, char ch, PyObject *ans) {
     if (*pos >= CMD_BUF_SZ) {
         if (!append_buf(buf, pos, ans)) return false;
@@ -34,7 +34,7 @@ add_char(char buf[CMD_BUF_SZ], size_t *pos, char ch, PyObject *ans) {
     return true;
 }
 
-static inline bool
+static bool
 read_response(int fd, monotonic_t timeout, PyObject *ans) {
     static char buf[CMD_BUF_SZ];
     size_t pos = 0;
@@ -54,6 +54,7 @@ read_response(int fd, monotonic_t timeout, PyObject *ans) {
         switch(state) {
             case START:
                 if (ch == 0x1b) state = STARTING_ESC;
+                if (ch == 0x03) { PyErr_SetString(PyExc_KeyboardInterrupt, "User pressed Ctrl+C"); return false; }
                 break;
 #define CASE(curr, q, next) case curr: state = ch == q ? next : START; break;
             CASE(STARTING_ESC, 'P', P);

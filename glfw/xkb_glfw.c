@@ -33,7 +33,7 @@
 #include <X11/XKBlib.h>
 #endif
 
-#define debug(...) if (_glfw.hints.init.debugKeyboard) printf(__VA_ARGS__);
+#define debug debug_input
 
 #ifdef XKB_HAS_NO_UTF32
 #include "xkb-compat-shim.h"
@@ -383,22 +383,162 @@ glfw_xkb_update_masks(_GLFWXKBData *xkb) {
 #define xkb_glfw_load_keymap(keymap, map_str) keymap = xkb_keymap_new_from_string(xkb->context, map_str, XKB_KEYMAP_FORMAT_TEXT_V1, 0);
 #define xkb_glfw_load_state(keymap, state) state = xkb_state_new(keymap);
 
+typedef struct {
+    struct xkb_state *state;
+    int failed;
+    xkb_mod_mask_t used_mods;
+    xkb_mod_mask_t shift, control, capsLock, numLock, alt, super, meta, hyper;
+
+    /* Combination modifiers to try */
+    int try_shift;
+    xkb_keycode_t shift_keycode;
+} modifier_mapping_algorithm_t;
+
+/* Algorithm for mapping virtual modifiers to real modifiers:
+ *   1. create new state
+ *   2. for each key in keymap
+ *      a. send key down to state
+ *      b. if it affected exactly one bit in modifier map
+ *         i) get keysym
+ *         ii) if keysym matches one of the known modifiers, save it for that modifier
+ *         iii) if modifier is latched, send key up and key down to toggle again
+ *      c. send key up to reset the state
+ *   3. if shift key found in step 2, run step 2 with all shift+key for each key
+ *   4. if shift, control, alt and super are not all found, declare failure
+ *   5. if failure, use static mapping from xkbcommon-names.h
+ *
+ * Step 3 is needed because many popular keymaps map meta to alt+shift.
+ *
+ * We could do better by constructing a system of linear equations, but it should not be
+ * needed in any sane system. We could also use this algorithm with X11, but X11
+ * provides XkbVirtualModsToReal which is guaranteed to be accurate, while this
+ * algorithm is only a heuristic.
+ *
+ * We don't touch level3 or level5 modifiers.
+ */
+static void modifier_mapping_algorithm( struct xkb_keymap *keymap UNUSED, xkb_keycode_t key, void *data ) {
+    modifier_mapping_algorithm_t *algorithm = ( modifier_mapping_algorithm_t * )data;
+    if ( algorithm->failed )
+        return;
+
+    if ( algorithm->try_shift ) {
+        if ( key == algorithm->shift_keycode ) return;
+        xkb_state_update_key( algorithm->state, algorithm->shift_keycode, XKB_KEY_DOWN );
+    }
+
+    enum xkb_state_component changed_type = xkb_state_update_key( algorithm->state, key, XKB_KEY_DOWN );
+    if ( changed_type & ( XKB_STATE_MODS_DEPRESSED | XKB_STATE_MODS_LATCHED | XKB_STATE_MODS_LOCKED ) ) {
+        xkb_mod_mask_t mods = xkb_state_serialize_mods( algorithm->state,
+                                                        algorithm->try_shift ? XKB_STATE_MODS_EFFECTIVE : ( XKB_STATE_MODS_DEPRESSED | XKB_STATE_MODS_LATCHED | XKB_STATE_MODS_LOCKED ) );
+
+        const xkb_keysym_t *keysyms;
+        int num_keysyms = xkb_state_key_get_syms( algorithm->state, key, &keysyms );
+        /* We can handle exactly one keysym with exactly one bit set in the implementation
+         * below; with a lot more gymnastics, we could set up an 8x8 linear system and solve
+         * for each modifier in case there are some modifiers that are only present in
+         * combination with others, but it is not worth the effort. */
+        if ( num_keysyms == 1 && mods && ( mods & ( mods-1 ) ) == 0 ) {
+#define S2( k, a )                                                      \
+            do {                                                        \
+                if ( keysyms[0] == XKB_KEY_##k##_L || keysyms[0] == XKB_KEY_##k##_R ) { \
+                    if ( !algorithm->a )                                \
+                        algorithm->a = mods;                            \
+                    else if ( algorithm->a != mods )                    \
+                        algorithm->failed = 1;                          \
+                }                                                       \
+            } while ( 0 )
+#define S1( k, a ) if ( ( keysyms[0] == XKB_KEY_##k ) && !algorithm->a ) algorithm->a = mods
+            S2( Shift, shift );
+            S2( Control, control );
+            S1( Caps_Lock, capsLock );
+            S1( Shift_Lock, numLock );
+            S2( Alt, alt );
+            S2( Super, super );
+            S2( Meta, meta );
+            S2( Hyper, hyper );
+#undef S1
+#undef S2
+        }
+        if ( !algorithm->shift_keycode && ( keysyms[0] == XKB_KEY_Shift_L || keysyms[0] == XKB_KEY_Shift_R ) )
+            algorithm->shift_keycode = key;
+
+        /* If this is a lock, then up and down to remove lock state*/
+        if ( changed_type & XKB_STATE_MODS_LOCKED ) { /* What should we do for LATCHED here? */
+            xkb_state_update_key( algorithm->state, key, XKB_KEY_UP );
+            xkb_state_update_key( algorithm->state, key, XKB_KEY_DOWN );
+        }
+    }
+    xkb_state_update_key( algorithm->state, key, XKB_KEY_UP );
+
+    if ( algorithm->try_shift ) {
+        xkb_state_update_key( algorithm->state, algorithm->shift_keycode, XKB_KEY_UP );
+    }
+}
+
+static int local_modifier_mapping(_GLFWXKBData *xkb) {
+    modifier_mapping_algorithm_t algorithm;
+
+    algorithm.failed = 0;
+    algorithm.used_mods = 0;
+    algorithm.shift = algorithm.control = algorithm.capsLock = algorithm.numLock = algorithm.alt = algorithm.super = algorithm.meta = algorithm.hyper = 0;
+    algorithm.try_shift = 0;
+    algorithm.shift_keycode = 0;
+
+    algorithm.state = xkb_state_new( xkb->keymap );
+    if ( algorithm.state != NULL )
+    {
+        xkb_keymap_key_for_each( xkb->keymap, &modifier_mapping_algorithm, &algorithm );
+        if ( !algorithm.shift_keycode )
+            algorithm.failed = 1;
+
+        if ( !( algorithm.shift && algorithm.control && algorithm.alt && algorithm.super && algorithm.meta && algorithm.hyper )
+             && !algorithm.failed  ) {
+            algorithm.try_shift = 1;
+            xkb_keymap_key_for_each( xkb->keymap, &modifier_mapping_algorithm, &algorithm );
+        }
+        xkb_state_unref( algorithm.state );
+        if ( !algorithm.failed && !( algorithm.shift && algorithm.control && algorithm.alt && algorithm.super ) )
+            algorithm.failed = 1;     /* must have found at least those 4 modifiers */
+    }
+
+    if ( !algorithm.failed ) {
+#define S( a ) xkb->a##Idx = XKB_MOD_INVALID; xkb->a##Mask = 0
+        S(control); S(shift); S(capsLock); S(alt); S(super); S(hyper); S(meta); S(numLock);
+#undef S
+
+        unsigned indx, shifted, used_bits = 0;
+        for (indx = 0, shifted = 1; indx < 32; ++indx, shifted <<= 1) {
+#define S( a ) if ( (xkb->a##Idx == XKB_MOD_INVALID) && !( used_bits & shifted ) && algorithm.a == shifted  ) xkb->a##Idx = indx, xkb->a##Mask = shifted, used_bits |= shifted
+            S(control); S(shift); S(capsLock); S(alt); S(super); S(hyper); S(meta); S(numLock);
+#undef S
+        }
+    }
+
+    if ( algorithm.failed )
+        debug( "Wayland modifier autodetection algorithm failed; using defaults\n" );
+    return !algorithm.failed;
+}
+
 static void
 glfw_xkb_update_masks(_GLFWXKBData *xkb) {
     // Should find better solution under Wayland
-    // See https://github.com/kovidgoyal/kitty/pull/3430 for discussion
+    // See https://github.com/kovidgoyal/kitty/pull/3943 for discussion
 
+    if ( getenv( "KITTY_WAYLAND_DETECT_MODIFIERS" ) == NULL || !local_modifier_mapping( xkb ) ) {
 #define S( a ) xkb->a##Idx = XKB_MOD_INVALID; xkb->a##Mask = 0
-    S(hyper); S(meta);
+        S(hyper); S(meta);
 #undef S
 #define S(a, n) xkb->a##Idx = xkb_keymap_mod_get_index(xkb->keymap, n); xkb->a##Mask = 1 << xkb->a##Idx;
-    S(control, XKB_MOD_NAME_CTRL);
-    S(shift, XKB_MOD_NAME_SHIFT);
-    S(capsLock, XKB_MOD_NAME_CAPS);
-    S(numLock, XKB_MOD_NAME_NUM);
-    S(alt, XKB_MOD_NAME_ALT);
-    S(super, XKB_MOD_NAME_LOGO);
+        S(control, XKB_MOD_NAME_CTRL);
+        S(shift, XKB_MOD_NAME_SHIFT);
+        S(capsLock, XKB_MOD_NAME_CAPS);
+        S(numLock, XKB_MOD_NAME_NUM);
+        S(alt, XKB_MOD_NAME_ALT);
+        S(super, XKB_MOD_NAME_LOGO);
 #undef S
+    }
+    debug("Modifier indices alt: 0x%x super: 0x%x hyper: 0x%x meta: 0x%x numlock: 0x%x shift: 0x%x capslock: 0x%x control: 0x%x\n",
+          xkb->altIdx, xkb->superIdx, xkb->hyperIdx, xkb->metaIdx, xkb->numLockIdx, xkb->shiftIdx, xkb->capsLockIdx, xkb->controlIdx);
 }
 
 #endif
@@ -490,7 +630,7 @@ load_compose_tables(_GLFWXKBData *xkb) {
     xkb_compose_table_unref(compose_table);
 }
 
-static inline xkb_mod_mask_t
+static xkb_mod_mask_t
 active_unknown_modifiers(_GLFWXKBData *xkb, struct xkb_state *state) {
     size_t i = 0;
     xkb_mod_mask_t ans = 0;
@@ -577,7 +717,7 @@ glfw_xkb_should_repeat(_GLFWXKBData *xkb, xkb_keycode_t keycode) {
 }
 
 
-static inline xkb_keysym_t
+static xkb_keysym_t
 compose_symbol(struct xkb_compose_state *composeState, xkb_keysym_t sym, int *compose_completed, char *key_text, int n) {
     *compose_completed = 0;
     if (sym == XKB_KEY_NoSymbol || !composeState) return sym;
@@ -610,7 +750,7 @@ glfw_xkb_keysym_from_name(const char *name, bool case_sensitive) {
     return (int)xkb_keysym_from_name(name, case_sensitive ? XKB_KEYSYM_NO_FLAGS : XKB_KEYSYM_CASE_INSENSITIVE);
 }
 
-static inline const char*
+static const char*
 format_mods(unsigned int mods) {
     static char buf[128];
     char *p = buf, *s;
@@ -632,7 +772,7 @@ format_mods(unsigned int mods) {
     return buf;
 }
 
-static inline const char*
+static const char*
 format_xkb_mods(_GLFWXKBData *xkb, const char* name, xkb_mod_mask_t mods) {
     static char buf[512];
     char *p = buf, *s;
@@ -687,7 +827,7 @@ glfw_xkb_key_from_ime(_GLFWIBUSKeyEvent *ev, bool handled_by_ime, bool failed) {
     xkb_keycode_t prev_handled_press = last_handled_press_keycode;
     last_handled_press_keycode = 0;
     bool is_release = ev->glfw_ev.action == GLFW_RELEASE;
-    debug("From IBUS: native_key: 0x%x name: %s is_release: %d\n", ev->glfw_ev.native_key, glfw_xkb_keysym_name(ev->glfw_ev.key), is_release);
+    debug("From IBUS: native_key: 0x%x name: %s is_release: %d handled_by_ime: %d\n", ev->glfw_ev.native_key, glfw_xkb_keysym_name(ev->glfw_ev.key), is_release, handled_by_ime);
     if (window && !handled_by_ime && !(is_release && ev->glfw_ev.native_key == (int) prev_handled_press)) {
         debug("↳ to application: glfw_keycode: 0x%x (%s) keysym: 0x%x (%s) action: %s %s text: %s\n",
             ev->glfw_ev.native_key, _glfwGetKeyName(ev->glfw_ev.native_key), ev->glfw_ev.key, glfw_xkb_keysym_name(ev->glfw_ev.key),
@@ -702,6 +842,19 @@ glfw_xkb_key_from_ime(_GLFWIBUSKeyEvent *ev, bool handled_by_ime, bool failed) {
       last_handled_press_keycode = ev->glfw_ev.native_key;
 }
 
+void
+glfw_xkb_forwarded_key_from_ime(xkb_keysym_t keysym, unsigned int glfw_mods) {
+    _GLFWwindow *w = _glfwFocusedWindow();
+    if (w && w->callbacks.keyboard) {
+        GLFWkeyevent fake_ev = {.action = GLFW_PRESS};
+        fake_ev.native_key = keysym;
+        fake_ev.key = glfw_key_for_sym(keysym);
+        fake_ev.mods = glfw_mods;
+        fake_ev.ime_state = GLFW_IME_NONE;
+        w->callbacks.keyboard((GLFWwindow*) w, &fake_ev);
+    }
+}
+
 static bool
 is_switch_layout_key(xkb_keysym_t xkb_sym) {
     return xkb_sym == XKB_KEY_ISO_First_Group || xkb_sym == XKB_KEY_ISO_Last_Group || xkb_sym == XKB_KEY_ISO_Next_Group || xkb_sym == XKB_KEY_ISO_Prev_Group || xkb_sym == XKB_KEY_Mode_switch;
@@ -713,7 +866,7 @@ glfw_xkb_handle_key_event(_GLFWwindow *window, _GLFWXKBData *xkb, xkb_keycode_t 
     const xkb_keysym_t *syms, *clean_syms, *default_syms;
     xkb_keysym_t xkb_sym, shifted_xkb_sym = XKB_KEY_NoSymbol, alternate_xkb_sym = XKB_KEY_NoSymbol;
     xkb_keycode_t code_for_sym = xkb_keycode, ibus_keycode = xkb_keycode;
-    GLFWkeyevent glfw_ev = {.action = GLFW_PRESS};
+    GLFWkeyevent glfw_ev = {.action = GLFW_PRESS, .native_key_id = xkb_keycode};
 #ifdef _GLFW_WAYLAND
     code_for_sym += 8;
 #else
@@ -786,7 +939,7 @@ glfw_xkb_handle_key_event(_GLFWwindow *window, _GLFWXKBData *xkb, xkb_keycode_t 
         glfw_ev.alternate_key = glfw_key_for_sym(alternate_xkb_sym);
         if (glfw_ev.alternate_key) debug(" alternate_key: %d (%s)", glfw_ev.alternate_key, _glfwGetKeyName(glfw_ev.alternate_key))
     }
-    debug("%s", "\n");
+    debug("\n");
 
     // NOTE: On linux, the reported native key identifier is the XKB keysym value.
     // Do not confuse `native_key` with `xkb_keycode` (the native keycode reported for the

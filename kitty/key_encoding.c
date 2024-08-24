@@ -31,22 +31,7 @@ typedef struct {
     KeyAction action;
 } EncodingData;
 
-bool
-is_modifier_key(const uint32_t key) {
-    START_ALLOW_CASE_RANGE
-    switch (key) {
-        case GLFW_FKEY_LEFT_SHIFT ... GLFW_FKEY_ISO_LEVEL5_SHIFT:
-        case GLFW_FKEY_CAPS_LOCK:
-        case GLFW_FKEY_SCROLL_LOCK:
-        case GLFW_FKEY_NUM_LOCK:
-            return true;
-        default:
-            return false;
-    }
-    END_ALLOW_CASE_RANGE
-}
-
-static inline void
+static void
 convert_glfw_mods(int mods, KeyEvent *ev, const unsigned key_encoding_flags) {
     if (!key_encoding_flags) mods &= ~GLFW_LOCK_MASK;
     ev->mods.alt = (mods & GLFW_MOD_ALT) > 0, ev->mods.ctrl = (mods & GLFW_MOD_CONTROL) > 0, ev->mods.shift = (mods & GLFW_MOD_SHIFT) > 0, ev->mods.super = (mods & GLFW_MOD_SUPER) > 0, ev->mods.hyper = (mods & GLFW_MOD_HYPER) > 0, ev->mods.meta = (mods & GLFW_MOD_META) > 0;
@@ -63,7 +48,7 @@ convert_glfw_mods(int mods, KeyEvent *ev, const unsigned key_encoding_flags) {
 }
 
 
-static inline void
+static void
 init_encoding_data(EncodingData *ans, const KeyEvent *ev) {
     ans->add_actions = ev->report_all_event_types && ev->action != PRESS;
     ans->has_mods = ev->mods.encoded[0] && ( ev->mods.encoded[0] != '1' || ev->mods.encoded[1] );
@@ -76,7 +61,7 @@ init_encoding_data(EncodingData *ans, const KeyEvent *ev) {
     memcpy(ans->encoded_mods, ev->mods.encoded, sizeof(ans->encoded_mods));
 }
 
-static inline int
+static int
 serialize(const EncodingData *data, char *output, const char csi_trailer) {
     int pos = 0;
     bool second_field_not_empty = data->has_mods || data->add_actions;
@@ -103,7 +88,6 @@ serialize(const EncodingData *data, char *output, const char csi_trailer) {
                 if (first) { P(";%u", codep); first = false; }
                 else P(":%u", codep);
             }
-            state = UTF8_ACCEPT;
             p++;
         }
     }
@@ -113,7 +97,7 @@ serialize(const EncodingData *data, char *output, const char csi_trailer) {
     return pos;
 }
 
-static inline uint32_t
+static uint32_t
 convert_kp_key_to_normal_key(uint32_t key_number) {
     switch(key_number) {
 #define S(x) case GLFW_FKEY_KP_##x: key_number = GLFW_FKEY_##x; break;
@@ -192,9 +176,9 @@ encode_function_key(const KeyEvent *ev, char *output) {
         }
         if (!ev->report_text) {
             switch(key_number) {
-                case GLFW_FKEY_ENTER: SIMPLE("\r");
-                case GLFW_FKEY_BACKSPACE: SIMPLE("\x7f");
-                case GLFW_FKEY_TAB: SIMPLE("\t");
+                case GLFW_FKEY_ENTER: if (ev->action == RELEASE) return -1; SIMPLE("\r");
+                case GLFW_FKEY_BACKSPACE: if (ev->action == RELEASE) return -1; SIMPLE("\x7f");
+                case GLFW_FKEY_TAB: if (ev->action == RELEASE) return -1; SIMPLE("\t");
                 default: break;
             }
         }
@@ -222,7 +206,7 @@ encode_function_key(const KeyEvent *ev, char *output) {
         case GLFW_FKEY_END: S(1, 'F');
         case GLFW_FKEY_F1: S(1, 'P');
         case GLFW_FKEY_F2: S(1, 'Q');
-        case GLFW_FKEY_F3: S(1, 'R');
+        case GLFW_FKEY_F3: S(13, '~');
         case GLFW_FKEY_F4: S(1, 'S');
         case GLFW_FKEY_F5: S(15, '~');
         case GLFW_FKEY_F6: S(17, '~');
@@ -234,6 +218,10 @@ encode_function_key(const KeyEvent *ev, char *output) {
         case GLFW_FKEY_F12: S(24, '~');
         case GLFW_FKEY_KP_BEGIN: S(1, 'E');
 /* end special numbers */
+        case GLFW_FKEY_MENU:
+            // use the same encoding as xterm for this key in legacy mode (F16)
+            if (legacy_mode) { S(29, '~'); }
+            break;
         default: break;
     }
 #undef S
@@ -329,7 +317,7 @@ encode_printable_ascii_key_legacy(const KeyEvent *ev, char *output) {
     return 0;
 }
 
-static inline bool
+static bool
 is_legacy_ascii_key(uint32_t key) {
     START_ALLOW_CASE_RANGE
     switch (key) {
@@ -408,7 +396,7 @@ encode_key(const KeyEvent *ev, char *output) {
     return serialize(&ed, output, 'u');
 }
 
-static inline bool
+static bool
 startswith_ascii_control_char(const char *p) {
     if (!p || !*p) return true;
     uint32_t codep; UTF8State state = UTF8_ACCEPT;

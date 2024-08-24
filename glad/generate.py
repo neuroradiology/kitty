@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -8,10 +8,9 @@ import shlex
 import shutil
 import subprocess
 
-
 cmdline = (
-    'glad --out-path {dest} --api gl:core=3.3 '
-    ' --extensions GL_ARB_texture_storage,GL_ARB_copy_image,GL_ARB_multisample,GL_ARB_robustness,GL_KHR_debug '
+    'glad --out-path {dest} --api gl:core=3.1 '
+    ' --extensions GL_ARB_texture_storage,GL_ARB_copy_image,GL_ARB_multisample,GL_ARB_robustness,GL_ARB_instanced_arrays,GL_KHR_debug '
     'c --header-only --debug'
 )
 

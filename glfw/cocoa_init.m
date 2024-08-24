@@ -264,6 +264,8 @@ display_reconfigured(CGDirectDisplayID display UNUSED, CGDisplayChangeSummaryFla
     }
 }
 
+static NSDictionary<NSString*,NSNumber*> *global_shortcuts = nil;
+
 @interface GLFWHelper : NSObject
 @end
 
@@ -280,6 +282,16 @@ display_reconfigured(CGDirectDisplayID display UNUSED, CGDisplayChangeSummaryFla
     (void)object;
 }
 
+// watch for settings change and rebuild global_shortcuts using key/value observing on NSUserDefaults
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context
+{
+    (void)keyPath; (void)object; (void)change; (void)context;
+    if (global_shortcuts != nil) {
+        [global_shortcuts release];
+        global_shortcuts = nil;
+    }
+}
+
 @end // GLFWHelper
 
 // Delegate for application related notifications {{{
@@ -294,6 +306,10 @@ display_reconfigured(CGDirectDisplayID display UNUSED, CGDisplayChangeSummaryFla
     (void)sender;
     if (_glfw.callbacks.application_close) _glfw.callbacks.application_close(0);
     return NSTerminateCancel;
+}
+
+- (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)app {
+    return YES;
 }
 
 static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
@@ -346,32 +362,49 @@ static GLFWapplicationwillfinishlaunchingfun finish_launching_callback = NULL;
         finish_launching_callback();
 }
 
-- (BOOL)application:(NSApplication *)theApplication openFile:(NSString *)filename {
-    (void)theApplication;
-    if (!filename || !_glfw.ns.file_open_callback) return NO;
-    const char *path = NULL;
+- (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
+    (void)sender;
+    if (!filename || !_glfw.ns.url_open_callback) return NO;
+    const char *url = NULL;
     @try {
-        path = [[NSFileManager defaultManager] fileSystemRepresentationWithPath: filename];
+        url = [[[NSURL fileURLWithPath:filename] absoluteString] UTF8String];
     } @catch(NSException *exc) {
         NSLog(@"Converting openFile filename: %@ failed with error: %@", filename, exc.reason);
         return NO;
     }
-    if (!path) return NO;
-    return _glfw.ns.file_open_callback(path);
+    if (!url) return NO;
+    return _glfw.ns.url_open_callback(url);
 }
 
 - (void)application:(NSApplication *)sender openFiles:(NSArray *)filenames {
     (void)sender;
-    if (!_glfw.ns.file_open_callback || !filenames) return;
+    if (!_glfw.ns.url_open_callback || !filenames) return;
     for (id x in filenames) {
         NSString *filename = x;
-        const char *path = NULL;
+        const char *url = NULL;
         @try {
-            path = [[NSFileManager defaultManager] fileSystemRepresentationWithPath: filename];
+            url = [[[NSURL fileURLWithPath:filename] absoluteString] UTF8String];
         } @catch(NSException *exc) {
             NSLog(@"Converting openFiles filename: %@ failed with error: %@", filename, exc.reason);
         }
-        if (path) _glfw.ns.file_open_callback(path);
+        if (url) _glfw.ns.url_open_callback(url);
+    }
+}
+
+// Remove openFile and openFiles when the minimum supported macOS version is 10.13
+- (void)application:(NSApplication *)sender openURLs:(NSArray<NSURL *> *)urls
+{
+    (void)sender;
+    if (!_glfw.ns.url_open_callback || !urls) return;
+    for (id x in urls) {
+        NSURL *ns_url = x;
+        const char *url = NULL;
+        @try {
+            url = [[ns_url absoluteString] UTF8String];
+        } @catch(NSException *exc) {
+            NSLog(@"Converting openURLs url: %@ failed with error: %@", ns_url, exc.reason);
+        }
+        if (url) _glfw.ns.url_open_callback(url);
     }
 }
 
@@ -379,7 +412,6 @@ static GLFWapplicationwillfinishlaunchingfun finish_launching_callback = NULL;
 {
     (void)notification;
     [NSApp stop:nil];
-    if (_glfw.ns.file_open_callback) _glfw.ns.file_open_callback(":cocoa::application launched::");
 
     CGDisplayRegisterReconfigurationCallback(display_reconfigured, NULL);
     _glfwCocoaPostEmptyEvent();
@@ -453,22 +485,298 @@ void* _glfwLoadLocalVulkanLoaderNS(void)
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
 
-static inline bool
-is_ctrl_tab(NSEvent *event, NSEventModifierFlags modifierFlags) {
-    if (
-            (modifierFlags == NSEventModifierFlagControl &&
-                [event.charactersIgnoringModifiers isEqualToString:@"\t"]) ||
-            (modifierFlags == (NSEventModifierFlagControl | NSEventModifierFlagShift) &&
-                [event.charactersIgnoringModifiers isEqualToString:@"\x19"])
-       ) return true;
-    return false;
+/**
+ * Apple Symbolic HotKeys Ids
+ * To find this symbolic hot keys indices do:
+ * 1. open Terminal
+ * 2. restore defaults in System Preferences > Keyboard > Shortcuts
+ * 3. defaults read com.apple.symbolichotkeys > current.txt
+ * 4. enable/disable given symbolic hot key in System Preferences > Keyboard > Shortcuts
+ * 5. defaults read com.apple.symbolichotkeys | diff -C 5 current.txt -
+ * 6. restore defaults in System Preferences > Keyboard > Shortcuts
+ */
+typedef enum AppleShortcutNames {
+    // launchpad & dock
+    kSHKTurnDockHidingOnOrOff                   = 52,   // Opt, Cmd, D
+    kSHKShowLaunchpad                           = 160,  //
+
+    // display
+    kSHKDecreaseDisplayBrightness1              = 53,   // F14 (Fn)
+    kSHKDecreaseDisplayBrightness2              = 55,   // F14 (Fn, Ctrl)
+    kSHKIncreaseDisplayBrightness1              = 54,   // F15 (Fn)
+    kSHKIncreaseDisplayBrightness2              = 56,   // F15 (Fn, Ctrl)
+
+    // mission control
+    kSHKMissionControl                          = 32,   // Ctrl, Arrow Up
+    kSHKShowNotificationCenter                  = 163,  //
+    kSHKTurnDoNotDisturbOnOrOff                 = 175,  //
+    kSHKApplicationWindows                      = 33,   // Ctrl, Arrow Down
+    kSHKShowDesktop                             = 36,   // F11
+    kSHKMoveLeftASpace                          = 79,   // Ctrl, Arrow Left
+    kSHKMoveRightASpace                         = 81,   // Ctrl, Arrow Right
+    kSHKSwitchToDesktop1                        = 118,  // Ctrl, 1
+    kSHKSwitchToDesktop2                        = 119,  // Ctrl, 2
+    kSHKSwitchToDesktop3                        = 120,  // Ctrl, 3
+    kSHKSwitchToDesktop4                        = 121,  // Ctrl, 4
+    kSHKQuickNote                               = 190,  // Fn, Q
+
+    // keyboard
+    kSHKChangeTheWayTabMovesFocus               = 13,   // Ctrl, F7
+    kSHKTurnKeyboardAccessOnOrOff               = 12,   // Ctrl, F1
+    kSHKMoveFocusToTheMenuBar                   = 7,    // Ctrl, F2
+    kSHKMoveFocusToTheDock                      = 8,    // Ctrl, F3
+    kSHKMoveFocusToActiveOrNextWindow           = 9,    // Ctrl, F4
+    kSHKMoveFocusToTheWindowToolbar             = 10,   // Ctrl, F5
+    kSHKMoveFocusToTheFloatingWindow            = 11,   // Ctrl, F6
+    kSHKMoveFocusToNextWindow                   = 27,   // Cmd, `
+    kSHKMoveFocusToStatusMenus                  = 57,   // Ctrl, F8
+
+    // input sources
+    kSHKSelectThePreviousInputSource            = 60,   // Ctrl, Space bar
+    kSHKSelectNextSourceInInputMenu             = 61,   // Ctrl, Opt, Space bar
+
+    // screenshots
+    kSHKSavePictureOfScreenAsAFile              = 28,   // Shift, Cmd, 3
+    kSHKCopyPictureOfScreenToTheClipboard       = 29,   // Ctrl, Shift, Cmd, 3
+    kSHKSavePictureOfSelectedAreaAsAFile        = 30,   // Shift, Cmd, 4
+    kSHKCopyPictureOfSelectedAreaToTheClipboard = 31,   // Ctrl, Shift, Cmd, 4
+    kSHKScreenshotAndRecordingOptions           = 184,  // Shift, Cmd, 5
+
+    // spotlight
+    kSHKShowSpotlightSearch                     = 64,   // Cmd, Space bar
+    kSHKShowFinderSearchWindow                  = 65,   // Opt, Cmd, Space bar
+
+    // accessibility
+    kSHKTurnZoomOnOrOff                         = 15,   // Opt, Cmd, 8
+    kSHKTurnImageSmoothingOnOrOff               = 23,   // Opt, Cmd, Backslash "\"
+    kSHKZoomOut                                 = 19,   // Opt, Cmd, -
+    kSHKZoomIn                                  = 17,   // Opt, Cmd, =
+    kSHKTurnFocusFollowingOnOrOff               = 179,  //
+
+    kSHKIncreaseContrast                        = 25,   // Ctrl, Opt, Cmd, .
+    kSHKDecreaseContrast                        = 26,   // Ctrl, Opt, Cmd, ,
+
+    kSHKInvertColors                            = 21,   // Ctrl, Opt, Cmd, 8
+    kSHKTurnVoiceOverOnOrOff                    = 59,   // Cmd, F5
+    kSHKShowAccessibilityControls               = 162,  // Opt, Cmd, F5
+
+    // app shortcuts
+    kSHKShowHelpMenu                            = 98,   // Shift, Cmd, /
+
+    // deprecated (Not shown on macOS Monterey)
+    kSHKMoveFocusToTheWindowDrawer              = 51,   // Opt, Cmd, `
+    kSHKShowDashboard                           = 62,   // F12
+    kSHKLookUpInDictionary                      = 70,   // Shift, Cmd, E
+    kSHKHideAndShowFrontRow                     = 73,   // Cmd, Esc
+    kSHKActivateSpaces                          = 75,   // F8
+
+    // unknown
+    kSHKUnknown                                 = 0,    //
+} AppleShortcutNames;
+
+static bool
+is_shiftable_shortcut(int scv) {
+    return scv == kSHKMoveFocusToActiveOrNextWindow || scv == kSHKMoveFocusToNextWindow;
 }
 
-static inline bool
-is_cmd_period(NSEvent *event, NSEventModifierFlags modifierFlags) {
-    if (modifierFlags != NSEventModifierFlagCommand) return false;
-    if ([event.charactersIgnoringModifiers isEqualToString:@"."]) return true;
-    return false;
+#define USEFUL_MODS(x) (x & (NSEventModifierFlagShift | NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagFunction))
+
+static void
+build_global_shortcuts_lookup(void) {
+    // dump these in a terminal with: defaults read com.apple.symbolichotkeys
+    NSMutableDictionary<NSString*, NSNumber*> *temp = [NSMutableDictionary dictionaryWithCapacity:128];  // will be autoreleased
+    NSMutableSet<NSNumber*> *temp_configured = [NSMutableSet setWithCapacity:128];  // will be autoreleased
+    NSMutableSet<NSNumber*> *temp_missing_value = [NSMutableSet setWithCapacity:128];  // will be autoreleased
+    NSDictionary *apple_settings = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.apple.symbolichotkeys"];
+    if (apple_settings) {
+        NSDictionary<NSString*, id> *symbolic_hotkeys = [apple_settings objectForKey:@"AppleSymbolicHotKeys"];
+        if (symbolic_hotkeys) {
+            for (NSString *key in symbolic_hotkeys) {
+                id obj = symbolic_hotkeys[key];
+                if (![key isKindOfClass:[NSString class]] || ![obj isKindOfClass:[NSDictionary class]]) continue;
+                NSInteger sc = [key integerValue];
+                NSDictionary *sc_value = obj;
+                id enabled = [sc_value objectForKey:@"enabled"];
+                if (!enabled || ![enabled isKindOfClass:[NSNumber class]]) continue;
+                [temp_configured addObject:@(sc)];
+                if (![enabled boolValue]) continue;
+                id v = [sc_value objectForKey:@"value"];
+                if (!v || ![v isKindOfClass:[NSDictionary class]]) {
+                    if ([enabled boolValue]) [temp_missing_value addObject:@(sc)];
+                    continue;
+                }
+                NSDictionary *value = v;
+                id t = [value objectForKey:@"type"];
+                if (!t || ![t isKindOfClass:[NSString class]] || ![t isEqualToString:@"standard"]) continue;
+                id p = [value objectForKey:@"parameters"];
+                if (!p || ![p isKindOfClass:[NSArray class]] || [(NSArray*)p count] < 2) continue;
+                NSArray<NSNumber*> *parameters = p;
+                NSInteger ch = [parameters[0] isKindOfClass:[NSNumber class]] ? [parameters[0] integerValue] : 0xffff;
+                NSInteger vk = [parameters[1] isKindOfClass:[NSNumber class]] ? [parameters[1] integerValue] : 0xffff;
+                NSEventModifierFlags mods = ([parameters count] > 2 && [parameters[2] isKindOfClass:[NSNumber class]]) ? [parameters[2] unsignedIntegerValue] : 0;
+                mods = USEFUL_MODS(mods);
+                static char buf[64];
+#define S(x, k) snprintf(buf, sizeof(buf) - 1, #x":%lx:%ld", (unsigned long)mods, (long)k)
+                if (ch == 0xffff) { if (vk == 0xffff) continue; S(v, vk); } else S(c, ch);
+                temp[@(buf)] = @(sc);
+                // the move to next window shortcuts also respond to the same shortcut + shift
+                if (is_shiftable_shortcut([key intValue]) && !(mods & NSEventModifierFlagShift)) {
+                    mods |= NSEventModifierFlagShift;
+                    if (ch == 0xffff) S(v, vk); else S(c, ch);
+                    temp[@(buf)] = @(sc);
+                }
+#undef S
+            }
+        }
+    }
+
+    // Add global shortcut definitions when the default enabled shortcut is not defined,
+    // or when the default enabled shortcut is not disabled and is missing a value.
+    // Here are the shortcuts that are enabled by default in the standard ANSI (US) layout.
+    // macOS provides separate configurations for some languages or keyboards.
+    // In general, the rules here will not take effect.
+    static char buf[64];
+#define S(i, t, m, k) if ([temp_configured member:@(i)] == nil || [temp_missing_value member:@(i)] != nil) { \
+        snprintf(buf, sizeof(buf) - 1, #t":%lx:%ld", (unsigned long)m, (long)k); \
+        temp[@(buf)] = @(i); \
+    }
+
+    // launchpad & dock
+    S(kSHKTurnDockHidingOnOrOff, c, (NSEventModifierFlagOption | NSEventModifierFlagCommand), 'd'); // Opt, Cmd, D
+    // mission control
+    S(kSHKMissionControl, v, NSEventModifierFlagControl, 126); // Ctrl, Arrow Up
+    S(kSHKApplicationWindows, v, NSEventModifierFlagControl, 125); // Ctrl, Arrow Down
+    // keyboard
+    S(kSHKMoveFocusToTheMenuBar, v, NSEventModifierFlagControl, 120); // Ctrl, F2
+    S(kSHKMoveFocusToTheDock, v, NSEventModifierFlagControl, 99); // Ctrl, F3
+    S(kSHKMoveFocusToActiveOrNextWindow, v, NSEventModifierFlagControl, 118); // Ctrl, F4
+    S(kSHKMoveFocusToActiveOrNextWindow, v, (NSEventModifierFlagShift | NSEventModifierFlagControl), 118); // Shift, Ctrl, F4
+    S(kSHKMoveFocusToNextWindow, c, NSEventModifierFlagCommand, 96); // Cmd, `
+    S(kSHKMoveFocusToNextWindow, c, (NSEventModifierFlagShift | NSEventModifierFlagCommand), 96); // Shift, Cmd, `
+    S(kSHKMoveFocusToStatusMenus, v, NSEventModifierFlagControl, 100); // Ctrl, F8
+    // input sources
+    S(kSHKSelectThePreviousInputSource, c, NSEventModifierFlagControl, 32); // Ctrl, Space bar
+    S(kSHKSelectNextSourceInInputMenu, c, (NSEventModifierFlagControl | NSEventModifierFlagOption), 32); // Ctrl, Opt, Space bar
+    // spotlight
+    S(kSHKShowSpotlightSearch, c, NSEventModifierFlagCommand, 32); // Cmd, Space bar
+    S(kSHKShowFinderSearchWindow, c, (NSEventModifierFlagOption | NSEventModifierFlagCommand), 32); // Opt, Cmd, Space bar
+
+#undef S
+    global_shortcuts = [[NSDictionary dictionaryWithDictionary:temp] retain];
+    /* NSLog(@"global_shortcuts: %@", global_shortcuts); */
+}
+
+static int
+is_active_apple_global_shortcut(NSEvent *event) {
+    if (global_shortcuts == nil) build_global_shortcuts_lookup();
+    NSEventModifierFlags modifierFlags = USEFUL_MODS([event modifierFlags]);
+    static char lookup_key[64];
+#define LOOKUP(t, k) \
+    snprintf(lookup_key, sizeof(lookup_key) - 1, #t":%lx:%ld", (unsigned long)modifierFlags, (long)k); \
+    NSNumber *sc = global_shortcuts[@(lookup_key)]; \
+    if (sc != nil) return [sc intValue]; \
+
+    if ([event.charactersIgnoringModifiers length] == 1) {
+        if (modifierFlags & NSEventModifierFlagShift) {
+            const uint32_t ch_without_shift = vk_to_unicode_key_with_current_layout([event keyCode]);
+            if (ch_without_shift < GLFW_FKEY_FIRST || ch_without_shift > GLFW_FKEY_LAST) {
+                LOOKUP(c, ch_without_shift);
+            }
+        }
+        const unichar ch = [event.charactersIgnoringModifiers characterAtIndex:0];
+        LOOKUP(c, ch);
+    }
+    unsigned short vk = [event keyCode];
+    if (vk != 0xffff) {
+        LOOKUP(v, vk);
+    }
+#undef LOOKUP
+    return kSHKUnknown;
+}
+
+static bool
+is_useful_apple_global_shortcut(int sc) {
+    switch(sc) {
+        // launchpad & dock
+        case kSHKTurnDockHidingOnOrOff:                   // Opt, Cmd, D
+        case kSHKShowLaunchpad:                           //
+
+        // display
+        case kSHKDecreaseDisplayBrightness1:              // F14 (Fn)
+        case kSHKDecreaseDisplayBrightness2:              // F14 (Fn, Ctrl)
+        case kSHKIncreaseDisplayBrightness1:              // F15 (Fn)
+        case kSHKIncreaseDisplayBrightness2:              // F14 (Fn, Ctrl)
+
+        // mission control
+        case kSHKMissionControl:                          // Ctrl, Arrow Up
+        case kSHKShowNotificationCenter:                  //
+        case kSHKTurnDoNotDisturbOnOrOff:                 //
+        case kSHKApplicationWindows:                      // Ctrl, Arrow Down
+        case kSHKShowDesktop:                             // F11
+        case kSHKMoveLeftASpace:                          // Ctrl, Arrow Left
+        case kSHKMoveRightASpace:                         // Ctrl, Arrow Right
+        case kSHKSwitchToDesktop1:                        // Ctrl, 1
+        case kSHKSwitchToDesktop2:                        // Ctrl, 2
+        case kSHKSwitchToDesktop3:                        // Ctrl, 3
+        case kSHKSwitchToDesktop4:                        // Ctrl, 4
+        case kSHKQuickNote:                               // Fn, Q
+
+        // keyboard
+        /* case kSHKChangeTheWayTabMovesFocus:               // Ctrl, F7 */
+        /* case kSHKTurnKeyboardAccessOnOrOff:               // Ctrl, F1 */
+        case kSHKMoveFocusToTheMenuBar:                   // Ctrl, F2
+        case kSHKMoveFocusToTheDock:                      // Ctrl, F3
+        case kSHKMoveFocusToActiveOrNextWindow:           // Ctrl, F4
+        /* case kSHKMoveFocusToTheWindowToolbar:             // Ctrl, F5 */
+        /* case kSHKMoveFocusToTheFloatingWindow:            // Ctrl, F6 */
+        case kSHKMoveFocusToNextWindow:                   // Cmd, `
+        case kSHKMoveFocusToStatusMenus:                  // Ctrl, F8
+
+        // input sources
+        case kSHKSelectThePreviousInputSource:            // Ctrl, Space bar
+        case kSHKSelectNextSourceInInputMenu:             // Ctrl, Opt, Space bar
+
+        // screenshots
+        /* case kSHKSavePictureOfScreenAsAFile:              // Shift, Cmd, 3 */
+        /* case kSHKCopyPictureOfScreenToTheClipboard:       // Ctrl, Shift, Cmd, 3 */
+        /* case kSHKSavePictureOfSelectedAreaAsAFile:        // Shift, Cmd, 4 */
+        /* case kSHKCopyPictureOfSelectedAreaToTheClipboard: // Ctrl, Shift, Cmd, 4 */
+        /* case kSHKScreenshotAndRecordingOptions:           // Shift, Cmd, 5 */
+
+        // spotlight
+        case kSHKShowSpotlightSearch:                     // Cmd, Space bar
+        case kSHKShowFinderSearchWindow:                  // Opt, Cmd, Space bar
+
+        // accessibility
+        /* case kSHKTurnZoomOnOrOff:                         // Opt, Cmd, 8 */
+        /* case kSHKTurnImageSmoothingOnOrOff:               // Opt, Cmd, Backslash "\" */
+        /* case kSHKZoomOut:                                 // Opt, Cmd, - */
+        /* case kSHKZoomIn:                                  // Opt, Cmd, = */
+        /* case kSHKTurnFocusFollowingOnOrOff:               // */
+        /* case kSHKIncreaseContrast:                        // Ctrl, Opt, Cmd, . */
+        /* case kSHKDecreaseContrast:                        // Ctrl, Opt, Cmd, , */
+        /* case kSHKInvertColors:                            // Ctrl, Opt, Cmd, 8 */
+        /* case kSHKTurnVoiceOverOnOrOff:                    // Cmd, F5 */
+        /* case kSHKShowAccessibilityControls:               // Opt, Cmd, F5 */
+
+        // app shortcuts
+        /* case kSHKShowHelpMenu:                            // Shift, Cmd, / */
+
+        // deprecated (Not shown on macOS Monterey)
+        /* case kSHKMoveFocusToTheWindowDrawer:              // Opt, Cmd, ` */
+        /* case kSHKShowDashboard:                           // F12 */
+        /* case kSHKLookUpInDictionary:                      // Shift, Cmd, E */
+        /* case kSHKHideAndShowFrontRow:                     // Cmd, Esc */
+        /* case kSHKActivateSpaces:                          // F8 */
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool
+is_apple_jis_layout_function_key(NSEvent *event) {
+    return [event keyCode] == 0x66 /* kVK_JIS_Eisu */ || [event keyCode] == 0x68 /* kVK_JIS_Kana */;
 }
 
 GLFWAPI GLFWapplicationshouldhandlereopenfun glfwSetApplicationShouldHandleReopen(GLFWapplicationshouldhandlereopenfun callback) {
@@ -507,33 +815,84 @@ int _glfwPlatformInit(void)
     }
 
     [NSApp setDelegate:_glfw.ns.delegate];
+    static struct {
+        unsigned short virtual_key_code;
+        NSEventModifierFlags input_source_switch_modifiers;
+        NSTimeInterval timestamp;
+    } last_keydown_shortcut_event;
+    last_keydown_shortcut_event.virtual_key_code = 0xffff;
+    last_keydown_shortcut_event.input_source_switch_modifiers = 0;
 
     NSEvent* (^keydown_block)(NSEvent*) = ^ NSEvent* (NSEvent* event)
     {
-        NSEventModifierFlags modifierFlags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
-        if (is_ctrl_tab(event, modifierFlags) || is_cmd_period(event, modifierFlags)) {
-            // Cocoa swallows Ctrl+Tab to cycle between views
-            [[NSApp keyWindow].contentView keyDown:event];
+        debug_key("---------------- key down -------------------\n");
+        debug_key("%s\n", [[event description] UTF8String]);
+        if (!_glfw.ignoreOSKeyboardProcessing) {
+            // first check if there is a global menu bar shortcut
+            if ([[NSApp mainMenu] performKeyEquivalent:event]) {
+                debug_key("keyDown triggered global menu bar action ignoring\n");
+                last_keydown_shortcut_event.virtual_key_code = [event keyCode];
+                last_keydown_shortcut_event.input_source_switch_modifiers = 0;
+                last_keydown_shortcut_event.timestamp = [event timestamp];
+                return nil;
+            }
+            // now check if there is a useful apple shortcut
+            int global_shortcut = is_active_apple_global_shortcut(event);
+            if (is_useful_apple_global_shortcut(global_shortcut)) {
+                debug_key("keyDown triggered global macOS shortcut ignoring\n");
+                last_keydown_shortcut_event.virtual_key_code = [event keyCode];
+                // record the modifier keys if switching to the next input source
+                last_keydown_shortcut_event.input_source_switch_modifiers = (global_shortcut == kSHKSelectNextSourceInInputMenu) ? USEFUL_MODS([event modifierFlags]) : 0;
+                last_keydown_shortcut_event.timestamp = [event timestamp];
+                return event;
+            }
+            // check for JIS keyboard layout function keys
+            if (is_apple_jis_layout_function_key(event)) {
+                debug_key("keyDown triggered JIS layout function key ignoring\n");
+                last_keydown_shortcut_event.virtual_key_code = [event keyCode];
+                last_keydown_shortcut_event.input_source_switch_modifiers = 0;
+                last_keydown_shortcut_event.timestamp = [event timestamp];
+                return event;
+            }
         }
-
-        return event;
+        last_keydown_shortcut_event.virtual_key_code = 0xffff;
+        NSWindow *kw = [NSApp keyWindow];
+        if (kw && kw.contentView) [kw.contentView keyDown:event];
+        else debug_key("keyDown ignored as no keyWindow present\n");
+        return nil;
     };
 
     NSEvent* (^keyup_block)(NSEvent*) = ^ NSEvent* (NSEvent* event)
     {
-        NSEventModifierFlags modifierFlags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
-        if (modifierFlags & NSEventModifierFlagCommand) {
-            // From http://cocoadev.com/index.pl?GameKeyboardHandlingAlmost
-            // This works around an AppKit bug, where key up events while holding
-            // down the command key don't get sent to the key window.
-            [[NSApp keyWindow] sendEvent:event];
+        debug_key("----------------- key up --------------------\n");
+        debug_key("%s\n", [[event description] UTF8String]);
+        if (last_keydown_shortcut_event.virtual_key_code != 0xffff && last_keydown_shortcut_event.virtual_key_code == [event keyCode]) {
+            // ignore as the corresponding key down event triggered a menu bar or macOS shortcut
+            last_keydown_shortcut_event.virtual_key_code = 0xffff;
+            debug_key("keyUp ignored as corresponds to previous keyDown that triggered a shortcut\n");
+            return nil;
         }
-        if (is_ctrl_tab(event, modifierFlags) || is_cmd_period(event, modifierFlags)) {
-            // Cocoa swallows Ctrl+Tab to cycle between views
-            [[NSApp keyWindow].contentView keyUp:event];
-        }
+        NSWindow *kw = [NSApp keyWindow];
+        if (kw && kw.contentView) [kw.contentView keyUp:event];
+        else debug_key("keyUp ignored as no keyWindow present\n");
+        return nil;
+    };
 
-        return event;
+    NSEvent* (^flags_changed_block)(NSEvent*) = ^ NSEvent* (NSEvent* event)
+    {
+        debug_key("-------------- flags changed -----------------\n");
+        debug_key("%s\n", [[event description] UTF8String]);
+        last_keydown_shortcut_event.virtual_key_code = 0xffff;
+        // switching to the next input source is only confirmed when all modifier keys are released
+        if (last_keydown_shortcut_event.input_source_switch_modifiers) {
+            if (!([event modifierFlags] & last_keydown_shortcut_event.input_source_switch_modifiers))
+                last_keydown_shortcut_event.input_source_switch_modifiers = 0;
+            return event;
+        }
+        NSWindow *kw = [NSApp keyWindow];
+        if (kw && kw.contentView) [kw.contentView flagsChanged:event];
+        else debug_key("flagsChanged ignored as no keyWindow present\n");
+        return nil;
     };
 
     _glfw.ns.keyUpMonitor =
@@ -542,6 +901,9 @@ int _glfwPlatformInit(void)
     _glfw.ns.keyDownMonitor =
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
                                               handler:keydown_block];
+    _glfw.ns.flagsChangedMonitor =
+        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskFlagsChanged
+                                              handler:flags_changed_block];
 
     if (_glfw.hints.init.ns.chdir)
         changeToResourcesDirectory();
@@ -553,6 +915,13 @@ int _glfwPlatformInit(void)
         @"NSTreatUnknownArgumentsAsOpen": @"NO",
     };
     [[NSUserDefaults standardUserDefaults] registerDefaults:defaults];
+
+    NSUserDefaults *apple_settings = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.symbolichotkeys"];
+    [apple_settings addObserver:_glfw.ns.helper
+                     forKeyPath:@"AppleSymbolicHotKeys"
+                        options:NSKeyValueObservingOptionNew
+                        context:NULL];
+    _glfw.ns.appleSettings = apple_settings;
 
     [[NSNotificationCenter defaultCenter]
         addObserver:_glfw.ns.helper
@@ -609,6 +978,8 @@ void _glfwPlatformTerminate(void)
                     object:nil];
         [[NSNotificationCenter defaultCenter]
             removeObserver:_glfw.ns.helper];
+        if (_glfw.ns.appleSettings)
+            [_glfw.ns.appleSettings removeObserver:_glfw.ns.helper forKeyPath:@"AppleSymbolicHotKeys"];
         [_glfw.ns.helper release];
         _glfw.ns.helper = nil;
     }
@@ -617,10 +988,16 @@ void _glfwPlatformTerminate(void)
         [NSEvent removeMonitor:_glfw.ns.keyUpMonitor];
     if (_glfw.ns.keyDownMonitor)
         [NSEvent removeMonitor:_glfw.ns.keyDownMonitor];
+    if (_glfw.ns.flagsChangedMonitor)
+        [NSEvent removeMonitor:_glfw.ns.flagsChangedMonitor];
 
-    free(_glfw.ns.clipboardString);
+    if (_glfw.ns.appleSettings != nil) {
+        [_glfw.ns.appleSettings release];
+        _glfw.ns.appleSettings = nil;
+    }
 
     _glfwTerminateNSGL();
+    if (global_shortcuts != nil) { [global_shortcuts release]; global_shortcuts = nil; }
 
     } // autoreleasepool
 }
@@ -641,19 +1018,21 @@ static pthread_t main_thread;
 static NSLock *tick_lock = NULL;
 
 
-void _glfwDispatchTickCallback() {
+void _glfwDispatchTickCallback(void) {
     if (tick_lock && tick_callback) {
-        [tick_lock lock];
-        while(tick_callback_requested) {
-            tick_callback_requested = false;
-            tick_callback(tick_callback_data);
+        while(true) {
+            bool do_call = false;
+            [tick_lock lock];
+            if (tick_callback_requested) { do_call = true; tick_callback_requested = false; }
+            [tick_lock unlock];
+            if (do_call) tick_callback(tick_callback_data);
+            else break;
         }
-        [tick_lock unlock];
     }
 }
 
 static void
-request_tick_callback() {
+request_tick_callback(void) {
     if (!tick_callback_requested) {
         tick_callback_requested = true;
         [NSApp performSelectorOnMainThread:@selector(tick_callback) withObject:nil waitUntilDone:NO];
@@ -703,7 +1082,7 @@ typedef struct {
 static Timer timers[128] = {{0}};
 static size_t num_timers = 0;
 
-static inline void
+static void
 remove_timer_at(size_t idx) {
     if (idx < num_timers) {
         Timer *t = timers + idx;
@@ -762,3 +1141,5 @@ void _glfwPlatformUpdateTimer(unsigned long long timer_id, monotonic_t interval,
         }
     }
 }
+
+void _glfwPlatformInputColorScheme(GLFWColorScheme appearance UNUSED) { }

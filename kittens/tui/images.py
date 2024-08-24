@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import codecs
@@ -10,17 +9,12 @@ from collections import defaultdict, deque
 from contextlib import suppress
 from enum import IntEnum
 from itertools import count
-from typing import (
-    Any, Callable, DefaultDict, Deque, Dict, Iterator, List, Optional,
-    Sequence, Tuple, Union
-)
+from typing import Any, Callable, ClassVar, DefaultDict, Deque, Dict, Generic, Iterator, List, Optional, Sequence, Tuple, Type, TypeVar, Union, cast
 
 from kitty.conf.utils import positive_float, positive_int
 from kitty.fast_data_types import create_canvas
-from kitty.typing import (
-    CompletedProcess, GRT_a, GRT_d, GRT_f, GRT_m, GRT_o, GRT_t, HandlerType
-)
-from kitty.utils import ScreenSize, find_exe, fit_image
+from kitty.typing import GRT_C, CompletedProcess, GRT_a, GRT_d, GRT_f, GRT_m, GRT_o, GRT_t, HandlerType
+from kitty.utils import ScreenSize, fit_image, which
 
 from .operations import cursor
 
@@ -51,6 +45,7 @@ class Frame:
     canvas_y: int
     mode: str
     needs_blend: bool
+    dimensions_swapped: bool
     dispose: Dispose
     path: str = ''
 
@@ -70,6 +65,10 @@ class Frame:
             self.mode = 'rgba' if q in ('blend', 'true') else 'rgb'
             self.needs_blend = q == 'blend'
             self.dispose = getattr(Dispose, identify_data['dispose'].lower())
+            self.dimensions_swapped = identify_data.get('orientation') in ('5', '6', '7', '8')
+            if self.dimensions_swapped:
+                self.canvas_width, self.canvas_height = self.canvas_height, self.canvas_width
+                self.width, self.height = self.height, self.width
 
     def __repr__(self) -> str:
         canvas = f'{self.canvas_width}x{self.canvas_height}:{self.canvas_x}+{self.canvas_y}'
@@ -99,7 +98,7 @@ class OpenFailed(ValueError):
 
     def __init__(self, path: str, message: str):
         ValueError.__init__(
-            self, 'Failed to open image: {} with error: {}'.format(path, message)
+            self, f'Failed to open image: {path} with error: {message}'
         )
         self.path = path
 
@@ -108,7 +107,7 @@ class ConvertFailed(ValueError):
 
     def __init__(self, path: str, message: str):
         ValueError.__init__(
-            self, 'Failed to convert image: {} with error: {}'.format(path, message)
+            self, f'Failed to convert image: {path} with error: {message}'
         )
         self.path = path
 
@@ -127,7 +126,7 @@ class OutdatedImageMagick(ValueError):
 last_imagemagick_cmd: Sequence[str] = ()
 
 
-def run_imagemagick(path: str, cmd: Sequence[str], keep_stdout: bool = True) -> CompletedProcess:
+def run_imagemagick(path: str, cmd: Sequence[str], keep_stdout: bool = True) -> 'CompletedProcess[bytes]':
     global last_imagemagick_cmd
     import subprocess
     last_imagemagick_cmd = cmd
@@ -142,14 +141,18 @@ def run_imagemagick(path: str, cmd: Sequence[str], keep_stdout: bool = True) -> 
 
 def identify(path: str) -> ImageData:
     import json
-    q = '{"fmt":"%m","canvas":"%g","transparency":"%A","gap":"%T","index":"%p","size":"%wx%h","dpi":"%xx%y","dispose":"%D"},'
-    exe = find_exe('magick')
+    q = (
+        '{"fmt":"%m","canvas":"%g","transparency":"%A","gap":"%T","index":"%p","size":"%wx%h",'
+        '"dpi":"%xx%y","dispose":"%D","orientation":"%[EXIF:Orientation]"},'
+    )
+    exe = which('magick')
     if exe:
         cmd = [exe, 'identify']
     else:
         cmd = ['identify']
     p = run_imagemagick(path, cmd + ['-format', q, '--', path])
-    data = json.loads(b'[' + p.stdout.rstrip(b',') + b']')
+    raw = p.stdout.rstrip(b',')
+    data = json.loads(b'[' + raw + b']')
     first = data[0]
     frames = list(map(Frame, data))
     image_fmt = first['fmt'].lower()
@@ -180,22 +183,33 @@ def render_image(
     m: ImageData,
     available_width: int, available_height: int,
     scale_up: bool,
-    only_first_frame: bool = False
+    only_first_frame: bool = False,
+    remove_alpha: str = '',
+    flip: bool = False, flop: bool = False,
 ) -> RenderedImage:
     import tempfile
     has_multiple_frames = len(m) > 1
     get_multiple_frames = has_multiple_frames and not only_first_frame
-    exe = find_exe('magick')
+    exe = which('magick')
     if exe:
         cmd = [exe, 'convert']
     else:
-        exe = find_exe('convert')
+        exe = which('convert')
         if exe is None:
             raise OSError('Failed to find the ImageMagick convert executable, make sure it is present in PATH')
         cmd = [exe]
-    cmd += ['-background', 'none', '--', path]
+    if remove_alpha:
+        cmd += ['-background', remove_alpha, '-alpha', 'remove']
+    else:
+        cmd += ['-background', 'none']
+    if flip:
+        cmd.append('-flip')
+    if flop:
+        cmd.append('-flop')
+    cmd += ['--', path]
     if only_first_frame and has_multiple_frames:
         cmd[-1] += '[0]'
+    cmd.append('-auto-orient')
     scaled = False
     width, height = m.width, m.height
     if scale_up:
@@ -205,12 +219,12 @@ def render_image(
             scaled = True
     if scaled or width > available_width or height > available_height:
         width, height = fit_image(width, height, available_width, available_height)
-        resize_cmd = ['-resize', '{}x{}!'.format(width, height)]
+        resize_cmd = ['-resize', f'{width}x{height}!']
         if get_multiple_frames:
             # we have to coalesce, resize and de-coalesce all frames
             resize_cmd = ['-coalesce'] + resize_cmd + ['-deconstruct']
         cmd += resize_cmd
-    cmd += ['-depth', '8', '-auto-orient', '-set', 'filename:f', '%w-%h-%g-%p']
+    cmd += ['-depth', '8', '-set', 'filename:f', '%w-%h-%g-%p']
     ans = RenderedImage(m.fmt, width, height, m.mode)
     if only_first_frame:
         ans.frames = [Frame(m.frames[0])]
@@ -277,70 +291,98 @@ def render_as_single_image(
     path: str, m: ImageData,
     available_width: int, available_height: int,
     scale_up: bool,
-    tdir: Optional[str] = None
+    tdir: Optional[str] = None,
+    remove_alpha: str = '', flip: bool = False, flop: bool = False,
 ) -> Tuple[str, int, int]:
     import tempfile
-    fd, output = tempfile.mkstemp(prefix='icat-', suffix=f'.{m.mode}', dir=tdir)
+    fd, output = tempfile.mkstemp(prefix='tty-graphics-protocol-', suffix=f'.{m.mode}', dir=tdir)
     os.close(fd)
-    result = render_image(path, output, m, available_width, available_height, scale_up, only_first_frame=True)
+    result = render_image(
+        path, output, m, available_width, available_height, scale_up,
+        only_first_frame=True, remove_alpha=remove_alpha, flip=flip, flop=flop)
     os.rename(result.frames[0].path, output)
     return output, result.width, result.height
 
 
 def can_display_images() -> bool:
-    import shutil
     ans: Optional[bool] = getattr(can_display_images, 'ans', None)
     if ans is None:
-        ans = shutil.which('convert') is not None
+        ans = which('convert') is not None
         setattr(can_display_images, 'ans', ans)
     return ans
 
 
 ImageKey = Tuple[str, int, int]
 SentImageKey = Tuple[int, int, int]
+T = TypeVar('T')
+
+
+class Alias(Generic[T]):
+
+    currently_processing: ClassVar[str] = ''
+
+    def __init__(self, defval: T) -> None:
+        self.name = ''
+        self.defval = defval
+
+    def __get__(self, instance: Optional['GraphicsCommand'], cls: Optional[Type['GraphicsCommand']] = None) -> T:
+        if instance is None:
+            return self.defval
+        return cast(T, instance._actual_values.get(self.name, self.defval))
+
+    def __set__(self, instance: 'GraphicsCommand', val: T) -> None:
+        if val == self.defval:
+            instance._actual_values.pop(self.name, None)
+        else:
+            instance._actual_values[self.name] = val
+
+    def __set_name__(self, owner: Type['GraphicsCommand'], name: str) -> None:
+        if len(name) == 1:
+            Alias.currently_processing = name
+        self.name = Alias.currently_processing
 
 
 class GraphicsCommand:
-    a: GRT_a = 't'  # action
-    q: int = 0      # suppress responses
-    f: GRT_f = 32   # image data format
-    t: GRT_t = 'd'  # transmission medium
-    s: int = 0        # sent image width
-    v: int = 0        # sent image height
-    S: int = 0        # size of data to read from file
-    O: int = 0        # offset of data to read from file
-    i: int = 0        # image id
-    I: int = 0        # image number
-    p: int = 0        # placement id
-    o: Optional[GRT_o] = None  # type of compression
-    m: GRT_m = 0    # 0 or 1 whether there is more chunked data
-    x: int = 0        # left edge of image area to display
-    y: int = 0        # top edge of image area to display
-    w: int = 0        # image width to display
-    h: int = 0        # image height to display
-    X: int = 0        # X-offset within cell
-    Y: int = 0        # Y-offset within cell
-    c: int = 0        # number of cols to display image over
-    r: int = 0        # number of rows to display image over
-    z: int = 0        # z-index
-    d: GRT_d = 'a'  # what to delete
+    a = action = Alias(cast(GRT_a, 't'))
+    q = quiet = Alias(0)
+    f = format = Alias(32)
+    t = transmission_type = Alias(cast(GRT_t, 'd'))
+    s = data_width = animation_state = Alias(0)
+    v = data_height = loop_count = Alias(0)
+    S = data_size = Alias(0)
+    O = data_offset = Alias(0)  # noqa
+    i = image_id = Alias(0)
+    I = image_number = Alias(0)  # noqa
+    p = placement_id = Alias(0)
+    o = compression = Alias(cast(Optional[GRT_o], None))
+    m = more = Alias(cast(GRT_m, 0))
+    x = left_edge = Alias(0)
+    y = top_edge = Alias(0)
+    w = width = Alias(0)
+    h = height = Alias(0)
+    X = cell_x_offset = blend_mode = Alias(0)
+    Y = cell_y_offset = bgcolor = Alias(0)
+    c = columns = other_frame_number = dest_frame = Alias(0)
+    r = rows = frame_number = source_frame = Alias(0)
+    z = z_index = gap = Alias(0)
+    C = cursor_movement = compose_mode = Alias(cast(GRT_C, 0))
+    d = delete_action = Alias(cast(GRT_d, 'a'))
+
+    def __init__(self) -> None:
+        self._actual_values: Dict[str, Any] = {}
 
     def __repr__(self) -> str:
         return self.serialize().decode('ascii').replace('\033', '^]')
 
     def clone(self) -> 'GraphicsCommand':
         ans = GraphicsCommand()
-        for k in GraphicsCommand.__annotations__:
-            setattr(ans, k, getattr(self, k))
+        ans._actual_values = self._actual_values.copy()
         return ans
 
     def serialize(self, payload: Union[bytes, str] = b'') -> bytes:
         items = []
-        for k in GraphicsCommand.__annotations__:
-            val: Union[str, None, int] = getattr(self, k)
-            defval: Union[str, None, int] = getattr(GraphicsCommand, k)
-            if val != defval and val is not None:
-                items.append('{}={}'.format(k, val))
+        for k, val in self._actual_values.items():
+            items.append(f'{k}={val}')
 
         ans: List[bytes] = []
         w = ans.append
@@ -355,9 +397,27 @@ class GraphicsCommand:
         return b''.join(ans)
 
     def clear(self) -> None:
-        for k in GraphicsCommand.__annotations__:
-            defval: Union[str, None, int] = getattr(GraphicsCommand, k)
-            setattr(self, k, defval)
+        self._actual_values = {}
+
+    def iter_transmission_chunks(self, data: Optional[bytes] = None, level: int = -1, compression_threshold: int = 1024) -> Iterator[bytes]:
+        if data is None:
+            yield self.serialize()
+            return
+        gc = self.clone()
+        gc.S = len(data)
+        if level and len(data) >= compression_threshold:
+            import zlib
+            compressed = zlib.compress(data, level)
+            if len(compressed) < len(data):
+                gc.o = 'z'
+                data = compressed
+                gc.S = len(data)
+        data = standard_b64encode(data)
+        while data:
+            chunk, data = data[:4096], data[4096:]
+            gc.m = 1 if data else 0
+            yield gc.serialize(chunk)
+            gc.clear()
 
 
 class Placement:

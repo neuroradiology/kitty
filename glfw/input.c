@@ -274,11 +274,11 @@ static bool parseMapping(_GLFWmapping* mapping, const char* string)
 //////////////////////////////////////////////////////////////////////////
 
 static void
-set_key_action(_GLFWwindow *window, uint32_t key, int val, int idx) {
+set_key_action(_GLFWwindow *window, const GLFWkeyevent *ev, int action, int idx) {
     const unsigned sz = arraysz(window->activated_keys);
     if (idx < 0) {
         for (unsigned i = 0; i < sz; i++) {
-            if (window->activated_keys[i].key == 0) {
+            if (window->activated_keys[i].native_key_id == 0) {
                 idx = i;
                 break;
             }
@@ -286,18 +286,18 @@ set_key_action(_GLFWwindow *window, uint32_t key, int val, int idx) {
         if (idx < 0) {
             idx = sz - 1;
             memmove(window->activated_keys, window->activated_keys + 1, sizeof(window->activated_keys[0]) * (sz - 1));
-            window->activated_keys[sz - 1].key = key;
+            window->activated_keys[sz - 1].native_key_id = 0;
         }
     }
-    if (val == GLFW_RELEASE) {
+    if (action == GLFW_RELEASE) {
         memset(window->activated_keys + idx, 0, sizeof(window->activated_keys[0]));
         if (idx < (int)sz - 1) {
             memmove(window->activated_keys + idx, window->activated_keys + idx + 1, sizeof(window->activated_keys[0]) * (sz - 1 - idx));
             memset(window->activated_keys + sz - 1, 0, sizeof(window->activated_keys[0]));
         }
     } else {
-        window->activated_keys[idx].key = key;
-        window->activated_keys[idx].action = val;
+        window->activated_keys[idx] = *ev;
+        window->activated_keys[idx].text = NULL;
     }
 }
 
@@ -305,30 +305,39 @@ set_key_action(_GLFWwindow *window, uint32_t key, int val, int idx) {
 //
 void _glfwInputKeyboard(_GLFWwindow* window, GLFWkeyevent* ev)
 {
-    if (ev->key > 0)
+    if (ev->native_key_id > 0)
     {
         bool repeated = false;
         int idx = -1;
         int current_action = GLFW_RELEASE;
         const unsigned sz = arraysz(window->activated_keys);
         for (unsigned i = 0; i < sz; i++) {
-            if (window->activated_keys[i].key == ev->key) {
+            if (window->activated_keys[i].native_key_id == ev->native_key_id) {
                 idx = i;
                 current_action = window->activated_keys[i].action;
                 break;
             }
         }
 
-        if (ev->action == GLFW_RELEASE && current_action == GLFW_RELEASE)
-            return;
+        if (ev->action == GLFW_RELEASE) {
+            if (current_action == GLFW_RELEASE) return;
+            if (idx > -1) {
+                const GLFWkeyevent *press_event = window->activated_keys + idx;
+                if (press_event->action == GLFW_PRESS || press_event->action == GLFW_REPEAT) {
+                    // Compose sequences under X11 give a different key value for press and release events
+                    // but we want the same key value so override it.
+                    ev->native_key = press_event->native_key;
+                    ev->key = press_event->key;
+                    ev->shifted_key = press_event->shifted_key;
+                    ev->alternate_key = press_event->alternate_key;
+                }
+            }
+        }
 
         if (ev->action == GLFW_PRESS && current_action == GLFW_PRESS)
             repeated = true;
 
-        if (ev->action == GLFW_RELEASE && window->stickyKeys)
-            set_key_action(window, ev->key, _GLFW_STICK, idx);
-        else
-            set_key_action(window, ev->key, ev->action, idx);
+        set_key_action(window, ev, (ev->action == GLFW_RELEASE && window->stickyKeys) ? _GLFW_STICK : ev->action, idx);
 
         if (repeated)
             ev->action = GLFW_REPEAT;
@@ -439,6 +448,10 @@ void _glfwInputJoystickHat(_GLFWjoystick* js, int hat, char value)
     js->hats[hat] = value;
 }
 
+void _glfwInputColorScheme(GLFWColorScheme value) {
+    _glfwPlatformInputColorScheme(value);
+    if (_glfw.callbacks.system_color_theme_change) _glfw.callbacks.system_color_theme_change(value);
+}
 
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW internal API                      //////
@@ -658,6 +671,14 @@ void _glfwCenterCursorInContentArea(_GLFWwindow* window)
 //////                        GLFW public API                       //////
 //////////////////////////////////////////////////////////////////////////
 
+GLFWAPI bool glfwGetIgnoreOSKeyboardProcessing(void) {
+    return _glfw.ignoreOSKeyboardProcessing;
+}
+
+GLFWAPI void glfwSetIgnoreOSKeyboardProcessing(bool enabled) {
+    _glfw.ignoreOSKeyboardProcessing = enabled;
+}
+
 GLFWAPI int glfwGetInputMode(GLFWwindow* handle, int mode)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
@@ -823,7 +844,8 @@ GLFWAPI GLFWKeyAction glfwGetKey(GLFWwindow* handle, uint32_t key)
     if (current_action == _GLFW_STICK)
     {
         // Sticky mode: release key now
-        set_key_action(window, key, GLFW_RELEASE, idx);
+        GLFWkeyevent ev = {0};
+        set_key_action(window, &ev, GLFW_RELEASE, idx);
         current_action = GLFW_PRESS;
     }
 
@@ -1508,35 +1530,40 @@ GLFWAPI int glfwGetGamepadState(int jid, GLFWgamepadstate* state)
     return true;
 }
 
-GLFWAPI void glfwSetClipboardString(GLFWwindow* handle UNUSED, const char* string)
-{
-    assert(string != NULL);
+void _glfw_free_clipboard_data(_GLFWClipboardData *cd) {
+    if (cd->mime_types) {
+        for (size_t i = 0; i < cd->num_mime_types; i++) free((void*)cd->mime_types[i]);
+        free((void*)cd->mime_types);
+    }
+    memset(cd, 0, sizeof(cd[0]));
+}
 
+GLFWAPI void glfwGetClipboard(GLFWClipboardType clipboard_type, const char* mime_type, GLFWclipboardwritedatafun write_data, void *object) {
     _GLFW_REQUIRE_INIT();
-    _glfwPlatformSetClipboardString(string);
+    _glfwPlatformGetClipboard(clipboard_type, mime_type, write_data, object);
 }
 
-GLFWAPI const char* glfwGetClipboardString(GLFWwindow* handle UNUSED)
-{
-    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    return _glfwPlatformGetClipboardString();
-}
-
-#if defined(_GLFW_X11) || defined(_GLFW_WAYLAND)
-GLFWAPI void glfwSetPrimarySelectionString(GLFWwindow* handle UNUSED, const char* string)
-{
-    assert(string != NULL);
-
+GLFWAPI void glfwSetClipboardDataTypes(GLFWClipboardType clipboard_type, const char* const *mime_types, size_t num_mime_types, GLFWclipboarditerfun get_data) {
+    assert(mime_types != NULL);
+    assert(get_data != NULL);
     _GLFW_REQUIRE_INIT();
-    _glfwPlatformSetPrimarySelectionString(string);
+    _GLFWClipboardData *cd = NULL;
+    switch(clipboard_type) {
+        case GLFW_CLIPBOARD: cd = &_glfw.clipboard; break;
+        case GLFW_PRIMARY_SELECTION: cd = &_glfw.primary; break;
+    }
+    _glfw_free_clipboard_data(cd);
+    cd->get_data = get_data;
+    cd->mime_types = calloc(num_mime_types, sizeof(char*));
+    cd->num_mime_types = 0;
+    cd->ctype = clipboard_type;
+    for (size_t i = 0; i < num_mime_types; i++) {
+        if (mime_types[i]) {
+            cd->mime_types[cd->num_mime_types++] = _glfw_strdup(mime_types[i]);
+        }
+    }
+    _glfwPlatformSetClipboard(clipboard_type);
 }
-
-GLFWAPI const char* glfwGetPrimarySelectionString(GLFWwindow* handle UNUSED)
-{
-    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    return _glfwPlatformGetPrimarySelectionString();
-}
-#endif
 
 GLFWAPI monotonic_t glfwGetTime(void)
 {

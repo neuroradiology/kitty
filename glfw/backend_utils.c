@@ -15,7 +15,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <float.h>
 #include <time.h>
 #include <stdio.h>
 
@@ -91,7 +90,7 @@ compare_timers(const void *a_, const void *b_) {
     return (a->trigger_at > b->trigger_at) ? 1 : (a->trigger_at < b->trigger_at) ? -1 : 0;
 }
 
-static inline void
+static void
 update_timers(EventLoopData *eld) {
     if (eld->timers_count > 1) qsort(eld->timers, eld->timers_count, sizeof(eld->timers[0]), compare_timers);
 }
@@ -164,7 +163,7 @@ prepareForPoll(EventLoopData *eld, monotonic_t timeout) {
     return timeout;
 }
 
-static inline struct timespec
+static struct timespec
 calc_time(monotonic_t nsec) {
     struct timespec result;
     result.tv_sec  = nsec / (1000LL * 1000LL * 1000LL);
@@ -271,7 +270,7 @@ wakeupEventLoop(EventLoopData *eld) {
 }
 
 #ifndef HAS_EVENT_FD
-static inline void
+static void
 closeFds(int *fds, size_t count) {
     while(count--) {
         if (*fds > 0) {
@@ -375,7 +374,7 @@ GLFWAPI char* utf_8_strndup(const char* source, size_t max_length) {
 int createAnonymousFile(off_t size) {
     int ret, fd = -1, shm_anon = 0;
 #ifdef HAS_MEMFD_CREATE
-    fd = memfd_create("glfw-shared", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    fd = glfw_memfd_create("glfw-shared", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     if (fd < 0) return -1;
     // We can add this seal before calling posix_fallocate(), as the file
     // is currently zero-sized anyway.

@@ -1,41 +1,54 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
-import imghdr
-import tempfile
+import os
 from base64 import standard_b64decode, standard_b64encode
-from typing import IO, TYPE_CHECKING, Dict, Generator, Optional
-from uuid import uuid4
+from io import BytesIO
+from typing import TYPE_CHECKING, Optional
+
+from kitty.types import AsyncResponse
+from kitty.utils import is_png
 
 from .base import (
-    MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadType,
-    RCOptions, RemoteCommand, ResponseType, Window
+    MATCH_WINDOW_OPTION,
+    SUPPORTED_IMAGE_FORMATS,
+    ArgsType,
+    Boss,
+    CmdGenerator,
+    ImageCompletion,
+    PayloadGetType,
+    PayloadType,
+    RCOptions,
+    RemoteCommand,
+    ResponseType,
+    Window,
 )
 
 if TYPE_CHECKING:
     from kitty.cli_stub import SetBackgroundImageRCOptions as CLIOptions
 
 
+layout_choices = 'tiled,scaled,mirror-tiled,clamped,configured'
+
+
 class SetBackgroundImage(RemoteCommand):
 
-    '''
-    data+: Chunk of at most 512 bytes of PNG data, base64 encoded. Must send an empty chunk to indicate end of image. \
+    protocol_spec = __doc__ = '''
+    data+/str: Chunk of at most 512 bytes of PNG data, base64 encoded. Must send an empty chunk to indicate end of image. \
     Or the special value - to indicate image must be removed.
-    img_id+: Unique uuid (as string) used for chunking
-    match: Window to change opacity in
-    layout: The image layout
-    all: Boolean indicating operate on all windows
-    configured: Boolean indicating if the configured value should be changed
+    match/str: Window to change opacity in
+    layout/choices.{layout_choices.replace(",", ".")}: The image layout
+    all/bool: Boolean indicating operate on all windows
+    configured/bool: Boolean indicating if the configured value should be changed
     '''
 
-    short_desc = 'Set the background_image'
+    short_desc = 'Set the background image'
     desc = (
-        'Set the background image for the specified OS windows. You must specify the path to a PNG image that'
-        ' will be used as the background. If you specify the special value "none" then any existing image will'
-        ' be removed.'
-    )
-    options_spec = '''\
+        'Set the background image for the specified OS windows. You must specify the path to an image that'
+        ' will be used as the background. If you specify the special value :code:`none` then any existing image will'
+        ' be removed. Supported image formats are: '
+    ) + ', '.join(SUPPORTED_IMAGE_FORMATS)
+    options_spec = f'''\
 --all -a
 type=bool-set
 By default, background image is only changed for the currently active OS window. This option will
@@ -49,8 +62,9 @@ Change the configured background image which is used for new OS windows.
 
 --layout
 type=choices
-choices=tiled,scaled,mirror-tiled,configured
-How the image should be displayed. The value of configured will use the configured value.
+choices={layout_choices}
+default=configured
+How the image should be displayed. A value of :code:`configured` will use the configured value.
 
 
 --no-response
@@ -59,32 +73,29 @@ default=false
 Don't wait for a response from kitty. This means that even if setting the background image
 failed, the command will exit with a success code.
 ''' + '\n\n' + MATCH_WINDOW_OPTION
-    argspec = 'PATH_TO_PNG_IMAGE'
-    args_count = 1
-    args_completion = {'files': ('PNG Images', ('*.png',))}
-    current_img_id: Optional[str] = None
-    current_file_obj: Optional[IO[bytes]] = None
+    args = RemoteCommand.Args(spec='PATH_TO_PNG_IMAGE', count=1, json_field='data', special_parse='!read_window_logo(io_data, args[0])',
+                              completion=ImageCompletion)
+    reads_streaming_data = True
 
     def message_to_kitty(self, global_opts: RCOptions, opts: 'CLIOptions', args: ArgsType) -> PayloadType:
         if len(args) != 1:
             self.fatal('Must specify path to exactly one PNG image')
-        if opts.no_response:
-            global_opts.no_command_response = True
-        path = args[0]
+        path = os.path.expanduser(args[0])
+        import secrets
         ret = {
             'match': opts.match,
             'configured': opts.configured,
             'layout': opts.layout,
             'all': opts.all,
-            'img_id': str(uuid4())
+            'stream_id': secrets.token_urlsafe(),
         }
         if path.lower() == 'none':
             ret['data'] = '-'
             return ret
-        if imghdr.what(path) != 'png':
+        if not is_png(path):
             self.fatal(f'{path} is not a PNG image')
 
-        def file_pipe(path: str) -> Generator[Dict, None, None]:
+        def file_pipe(path: str) -> CmdGenerator:
             with open(path, 'rb') as f:
                 while True:
                     data = f.read(512)
@@ -98,33 +109,25 @@ failed, the command will exit with a success code.
 
     def response_from_kitty(self, boss: Boss, window: Optional[Window], payload_get: PayloadGetType) -> ResponseType:
         data = payload_get('data')
-        if data != '-':
-            img_id = payload_get('img_id')
-            if img_id != set_background_image.current_img_id:
-                set_background_image.current_img_id = img_id
-                set_background_image.current_file_obj = tempfile.NamedTemporaryFile()
-            if data:
-                assert set_background_image.current_file_obj is not None
-                set_background_image.current_file_obj.write(standard_b64decode(data))
-                return None
-
-        windows = self.windows_for_payload(boss, window, payload_get)
-        os_windows = tuple({w.os_window_id for w in windows})
+        windows = self.windows_for_payload(boss, window, payload_get, window_match_name='match')
+        os_windows = tuple({w.os_window_id for w in windows if w})
         layout = payload_get('layout')
         if data == '-':
             path = None
+            tfile = BytesIO()
         else:
-            assert set_background_image.current_file_obj is not None
-            f = set_background_image.current_file_obj
-            path = f.name
-            set_background_image.current_file_obj = None
-            f.flush()
+            q = self.handle_streamed_data(standard_b64decode(data) if data else b'', payload_get)
+            if isinstance(q, AsyncResponse):
+                return q
+            path = '/image/from/remote/control'
+            tfile = q
 
         try:
-            boss.set_background_image(path, os_windows, payload_get('configured'), layout)
+            boss.set_background_image(path, os_windows, payload_get('configured'), layout, tfile.getvalue())
         except ValueError as err:
             err.hide_traceback = True  # type: ignore
             raise
+        return None
 
 
 set_background_image = SetBackgroundImage()

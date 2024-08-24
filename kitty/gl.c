@@ -38,12 +38,22 @@ check_for_gl_error(void UNUSED *ret, const char *name, GLADapiproc UNUSED funcpt
     }
 }
 
+const char*
+gl_version_string(void) {
+    static char buf[256];
+    int gl_major = GLAD_VERSION_MAJOR(global_state.gl_version);
+    int gl_minor = GLAD_VERSION_MINOR(global_state.gl_version);
+    const char *gvs = (const char*)glGetString(GL_VERSION);
+    snprintf(buf, sizeof(buf), "'%s' Detected version: %d.%d", gvs, gl_major, gl_minor);
+    return buf;
+}
+
 void
-gl_init() {
+gl_init(void) {
     static bool glad_loaded = false;
     if (!glad_loaded) {
-        int gl_version = gladLoadGL(glfwGetProcAddress);
-        if (!gl_version) {
+        global_state.gl_version = gladLoadGL(glfwGetProcAddress);
+        if (!global_state.gl_version) {
             fatal("Loading the OpenGL library failed");
         }
         if (!global_state.debug_rendering) {
@@ -57,11 +67,11 @@ gl_init() {
         ARB_TEST(texture_storage);
 #undef ARB_TEST
         glad_loaded = true;
-        int gl_major = GLAD_VERSION_MAJOR(gl_version);
-        int gl_minor = GLAD_VERSION_MINOR(gl_version);
-        if (global_state.debug_rendering) printf("GL version string: '%s' Detected version: %d.%d\n", glGetString(GL_VERSION), gl_major, gl_minor);
+        int gl_major = GLAD_VERSION_MAJOR(global_state.gl_version);
+        int gl_minor = GLAD_VERSION_MINOR(global_state.gl_version);
+        if (global_state.debug_rendering) printf("[%.3f] GL version string: %s\n", monotonic_t_to_s_double(monotonic()), gl_version_string());
         if (gl_major < OPENGL_REQUIRED_VERSION_MAJOR || (gl_major == OPENGL_REQUIRED_VERSION_MAJOR && gl_minor < OPENGL_REQUIRED_VERSION_MINOR)) {
-            fatal("OpenGL version is %d.%d, version >= 3.3 required for kitty", gl_major, gl_minor);
+            fatal("OpenGL version is %d.%d, version >= %d.%d required for kitty", gl_major, gl_minor, OPENGL_REQUIRED_VERSION_MAJOR, OPENGL_REQUIRED_VERSION_MINOR);
         }
     }
 }
@@ -71,7 +81,7 @@ update_surface_size(int w, int h, GLuint offscreen_texture_id) {
     glViewport(0, 0, w, h);
     if (offscreen_texture_id) {
         glBindTexture(GL_TEXTURE_2D, offscreen_texture_id);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
     }
 }
 
@@ -94,9 +104,9 @@ free_framebuffer(GLuint *fb_id) {
 static Program programs[64] = {{0}};
 
 GLuint
-compile_shader(GLenum shader_type, const char *source) {
+compile_shaders(GLenum shader_type, GLsizei count, const GLchar * const * source) {
     GLuint shader_id = glCreateShader(shader_type);
-    glShaderSource(shader_id, 1, (const GLchar **)&source, NULL);
+    glShaderSource(shader_id, count, source, NULL);
     glCompileShader(shader_id);
     GLint ret = GL_FALSE;
     glGetShaderiv(shader_id, GL_COMPILE_STATUS, &ret);
@@ -104,9 +114,15 @@ compile_shader(GLenum shader_type, const char *source) {
         GLsizei len;
         static char glbuf[4096];
         glGetShaderInfoLog(shader_id, sizeof(glbuf), &len, glbuf);
-        log_error("Failed to compile GLSL shader!\n%s", glbuf);
         glDeleteShader(shader_id);
-        PyErr_SetString(PyExc_ValueError, "Failed to compile shader");
+        const char *shader_type_name = "unknown_type";
+        switch(shader_type) {
+            case GL_VERTEX_SHADER:
+                shader_type_name = "vertex"; break;
+            case GL_FRAGMENT_SHADER:
+                shader_type_name = "fragment"; break;
+        }
+        PyErr_Format(PyExc_ValueError, "Failed to compile GLSL %s shader:\n%s", shader_type_name, glbuf);
         return 0;
     }
     return shader_id;
@@ -126,6 +142,8 @@ init_uniforms(int program) {
     for (GLint i = 0; i < p->num_of_uniforms; i++) {
         Uniform *u = p->uniforms + i;
         glGetActiveUniform(p->id, (GLuint)i, sizeof(u->name)/sizeof(u->name[0]), NULL, &(u->size), &(u->type), u->name);
+        char *l = strchr(u->name, '[');
+        if (l) *l = 0;
         u->location = glGetUniformLocation(p->id, u->name);
         u->idx = i;
     }
@@ -134,13 +152,18 @@ init_uniforms(int program) {
 GLint
 get_uniform_location(int program, const char *name) {
     Program *p = programs + program;
-    return glGetUniformLocation(p->id, name);
+    const size_t n = strlen(name) + 1;
+    for (GLint i = 0; i < p->num_of_uniforms; i++) {
+        Uniform *u = p->uniforms + i;
+        if (strncmp(u->name, name, n) == 0) return u->location;
+    }
+    return -1;
 }
 
 GLint
 get_uniform_information(int program, const char *name, GLenum information_type) {
     GLint q; GLuint t;
-    static const char* names[] = {""};
+    const char* names[] = {""};
     names[0] = name;
     GLuint pid = program_id(program);
     glGetUniformIndices(pid, 1, (void*)names, &t);
@@ -226,7 +249,7 @@ unbind_buffer(ssize_t buf_idx) {
     glBindBuffer(buffers[buf_idx].usage, 0);
 }
 
-static inline void
+static void
 alloc_buffer(ssize_t idx, GLsizeiptr size, GLenum usage) {
     Buffer *b = buffers + idx;
     if (b->size == size) return;
@@ -234,13 +257,13 @@ alloc_buffer(ssize_t idx, GLsizeiptr size, GLenum usage) {
     glBufferData(b->usage, size, NULL, usage);
 }
 
-static inline void*
+static void*
 map_buffer(ssize_t idx, GLenum access) {
     void *ans = glMapBuffer(buffers[idx].usage, access);
     return ans;
 }
 
-static inline void
+static void
 unmap_buffer(ssize_t idx) {
     glUnmapBuffer(buffers[idx].usage);
 }
@@ -306,7 +329,7 @@ add_located_attribute_to_vao(ssize_t vao_idx, GLint aloc, GLint size, GLenum dat
             break;
     }
     if (divisor) {
-        glVertexAttribDivisor(aloc, divisor);
+        glVertexAttribDivisorARB(aloc, divisor);
     }
     unbind_buffer(buf);
 }

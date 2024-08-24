@@ -1,12 +1,5 @@
 " Scan the following dirs recursively for tags
-let g:project_tags_dirs = ['kitty', 'kittens']
-if exists('g:ale_linters')
-    let g:ale_linters['python'] = ['mypy', 'flake8']
-else
-    let g:ale_linters = {'python': ['mypy', 'flake8']}
-endif
-let g:ale_python_mypy_executable = './mypy-editor-integration'
-let g:ycm_python_binary_path = 'python3'
+let g:project_tags_dirs = ['kitty', 'kittens', 'tools']
 set wildignore+==template.py
 set wildignore+=tags
 set expandtab

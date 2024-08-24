@@ -9,8 +9,6 @@
 #include "data-types.h"
 #include "gl-wrapper.h"
 
-#define GLSL_VERSION (OPENGL_REQUIRED_VERSION_MAJOR * 100 + OPENGL_REQUIRED_VERSION_MINOR * 10)
-
 typedef struct {
     GLint size, index;
 } UniformBlock;
@@ -33,6 +31,7 @@ typedef struct {
 
 
 void gl_init(void);
+const char* gl_version_string(void);
 void update_surface_size(int w, int h, GLuint offscreen_texture_id);
 void free_texture(GLuint *tex_id);
 void free_framebuffer(GLuint *fb_id);
@@ -57,4 +56,4 @@ void bind_vertex_array(ssize_t vao_idx);
 void bind_vao_uniform_buffer(ssize_t vao_idx, size_t bufnum, GLuint block_index);
 void unbind_vertex_array(void);
 void unbind_program(void);
-GLuint compile_shader(GLenum shader_type, const char *source);
+GLuint compile_shaders(GLenum shader_type, GLsizei count, const GLchar * const * string);

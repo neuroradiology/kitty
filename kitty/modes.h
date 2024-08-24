@@ -58,7 +58,7 @@
 // National Replacement Character Set Mode
 #define DECNRCM (42 << 5)
 
-// Xterm mouse protocol
+// xterm mouse protocol
 #define MOUSE_BUTTON_TRACKING (1000 << 5)
 #define MOUSE_MOTION_TRACKING  (1002 << 5)
 #define MOUSE_MOVE_TRACKING (1003 << 5)
@@ -66,6 +66,7 @@
 #define MOUSE_UTF8_MODE (1005 << 5)
 #define MOUSE_SGR_MODE (1006 << 5)
 #define MOUSE_URXVT_MODE (1015 << 5)
+#define MOUSE_SGR_PIXEL_MODE (1016 << 5)
 
 // Save cursor (DECSC)
 #define SAVE_CURSOR (1048 << 5)
@@ -80,3 +81,12 @@
 #define BRACKETED_PASTE (2004 << 5)
 #define BRACKETED_PASTE_START "200~"
 #define BRACKETED_PASTE_END  "201~"
+
+// Pending updates mode
+#define PENDING_UPDATE (2026 << 5)
+
+// In-band resize notification mode
+#define INBAND_RESIZE_NOTIFICATION (2048 << 5)
+
+// Handle Ctrl-C/Ctrl-Z mode
+#define HANDLE_TERMIOS_SIGNALS (19997 << 5)

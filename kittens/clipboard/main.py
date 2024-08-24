@@ -1,108 +1,91 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
-import os
 import sys
-from typing import List, NoReturn, Optional
-
-from kitty.cli import parse_args
-from kitty.cli_stub import ClipboardCLIOptions
-
-from ..tui.handler import Handler
-from ..tui.loop import Loop
-
-
-class Clipboard(Handler):
-
-    def __init__(self, data_to_send: Optional[bytes], args: ClipboardCLIOptions):
-        self.args = args
-        self.clipboard_contents: Optional[str] = None
-        self.data_to_send = data_to_send
-
-    def initialize(self) -> None:
-        if self.data_to_send is not None:
-            self.cmd.write_to_clipboard(self.data_to_send, self.args.use_primary)
-        if not self.args.get_clipboard:
-            if self.args.wait_for_completion:
-                # ask kitty for the TN terminfo capability and
-                # only quit after a response is received
-                self.print('\x1bP+q544e\x1b\\', end='')
-                self.print('Waiting for completion...')
-                return
-            self.quit_loop(0)
-            return
-        self.cmd.request_from_clipboard(self.args.use_primary)
-
-    def on_clipboard_response(self, text: str, from_primary: bool = False) -> None:
-        self.clipboard_contents = text
-        self.quit_loop(0)
-
-    def on_capability_response(self, name: str, val: str) -> None:
-        self.quit_loop(0)
-
-    def on_interrupt(self) -> None:
-        self.quit_loop(1)
-
-    def on_eot(self) -> None:
-        self.quit_loop(1)
-
 
 OPTIONS = r'''
---get-clipboard
-default=False
+--get-clipboard -g
 type=bool-set
-Output the current contents of the clipboard to stdout. Note that this
-will not work if you have not enabled the option to allow reading the clipboard
-in kitty.conf
+Output the current contents of the clipboard to STDOUT. Note that by default
+kitty will prompt for permission to access the clipboard. Can be controlled
+by :opt:`clipboard_control`.
 
 
---use-primary
-default=False
+--use-primary -p
 type=bool-set
 Use the primary selection rather than the clipboard on systems that support it,
-such as X11.
+such as Linux.
+
+
+--mime -m
+type=list
+The mimetype of the specified file. Useful when the auto-detected mimetype is
+likely to be incorrect or the filename has no extension and therefore no mimetype
+can be detected. If more than one file is specified, this option should be specified multiple
+times, once for each specified file. When copying data from the clipboard, you can use wildcards
+to match MIME types. For example: :code:`--mime 'text/*'` will match any textual MIME type
+available on the clipboard, usually the first matching MIME type is copied. The special MIME
+type :code:`.` will return the list of available MIME types currently on the system clipboard.
+
+
+--alias -a
+type=list
+Specify aliases for MIME types. Aliased MIME types are considered equivalent.
+When copying to clipboard both the original and alias are made available on the
+clipboard. When copying from clipboard if the original is not found, the alias
+is used, as a fallback. Can be specified multiple times to create multiple
+aliases. For example: :code:`--alias text/plain=text/x-rst` makes :code:`text/plain` an alias
+of :code:`text/rst`. Aliases are not used in filter mode. An alias for
+:code:`text/plain` is automatically created if :code:`text/plain` is not present in the input data, but some
+other :code:`text/*` MIME is present.
 
 
 --wait-for-completion
-default=False
 type=bool-set
 Wait till the copy to clipboard is complete before exiting. Useful if running
-the kitten in a dedicated, ephemeral window.
+the kitten in a dedicated, ephemeral window. Only needed in filter mode.
 '''.format
 help_text = '''\
 Read or write to the system clipboard.
 
-To set the clipboard text, pipe in the new text on stdin. Use the
-:option:`--get-clipboard` option to output the current clipboard contents to
-:file:`stdout`. Note that you must enable reading of clipboard in
-:file:`kitty.conf` first.
+This kitten operates most simply in :italic:`filter mode`.
+To set the clipboard text, pipe in the new text on :file:`STDIN`. Use the
+:option:`--get-clipboard` option to instead output the current clipboard text content to
+:file:`STDOUT`. Note that copying from the clipboard will cause a permission
+popup, see :opt:`clipboard_control` for details.
+
+For more control, specify filename arguments. Then, different MIME types can be copied to/from
+the clipboard. Some examples:
+
+.. code:: sh
+
+    # Copy an image to the clipboard:
+    kitten clipboard picture.png
+
+    # Copy an image and some text to the clipboard:
+    kitten clipboard picture.jpg text.txt
+
+    # Copy text from STDIN and an image to the clipboard:
+    echo hello | kitten clipboard picture.png /dev/stdin
+
+    # Copy any raster image available on the clipboard to a PNG file:
+    kitten clipboard -g picture.png
+
+    # Copy an image to a file and text to STDOUT:
+    kitten clipboard -g picture.png /dev/stdout
+
+    # List the formats available on the system clipboard
+    kitten clipboard -g -m . /dev/stdout
 '''
 
-usage = ''
-
-
-def main(args: List[str]) -> NoReturn:
-    cli_opts, items = parse_args(args[1:], OPTIONS, usage, help_text, 'kitty +kitten clipboard', result_class=ClipboardCLIOptions)
-    if items:
-        raise SystemExit('Unrecognized extra command line arguments')
-    data: Optional[bytes] = None
-    if not sys.stdin.isatty():
-        data = sys.stdin.buffer.read()
-        sys.stdin = open(os.ctermid(), 'r')
-    loop = Loop()
-    handler = Clipboard(data, cli_opts)
-    loop.loop(handler)
-    if loop.return_code == 0 and handler.clipboard_contents:
-        sys.stdout.write(handler.clipboard_contents)
-        sys.stdout.flush()
-    raise SystemExit(loop.return_code)
-
-
+usage = '[files to copy to/from]'
 if __name__ == '__main__':
-    main(sys.argv)
+    raise SystemExit('This should be run as kitten clipboard')
 elif __name__ == '__doc__':
+    from kitty.cli import CompletionSpec
     cd = sys.cli_docs  # type: ignore
     cd['usage'] = usage
     cd['options'] = OPTIONS
     cd['help_text'] = help_text
+    cd['short_desc'] = 'Copy/paste with the system clipboard, even over SSH'
+    cd['args_completion'] = CompletionSpec.from_string('type:file mime:* group:Files')

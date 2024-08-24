@@ -1,54 +1,59 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import ctypes
+import os
 import sys
+from collections.abc import Generator
 from functools import partial
 from math import ceil, cos, floor, pi
-from typing import (
-    Any, Callable, Dict, Generator, List, Optional, Tuple, Union, cast
-)
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Union, cast
 
-from kitty.config import defaults
-from kitty.constants import is_macos
+from kitty.constants import fonts_dir, is_macos
 from kitty.fast_data_types import (
-    Screen, create_test_font_group, get_fallback_font, set_font_data,
-    set_options, set_send_sprite_to_gpu, sprite_map_set_limits,
-    test_render_line, test_shape
+    NUM_UNDERLINE_STYLES,
+    Screen,
+    create_test_font_group,
+    current_fonts,
+    get_fallback_font,
+    get_options,
+    set_builtin_nerd_font,
+    set_font_data,
+    set_options,
+    set_send_sprite_to_gpu,
+    sprite_map_set_limits,
+    test_render_line,
+    test_shape,
 )
-from kitty.fonts.box_drawing import (
-    BufType, render_box_char, render_missing_glyph
-)
-from kitty.options_stub import Options as OptionsStub
+from kitty.fonts.box_drawing import BufType, distribute_dots, render_box_char, render_missing_glyph
+from kitty.options.types import Options, defaults
+from kitty.options.utils import parse_font_spec
+from kitty.types import _T
 from kitty.typing import CoreTextFont, FontConfigPattern
 from kitty.utils import log_error
 
+from . import family_name_to_key
+from .common import get_font_files
+
 if is_macos:
-    from .core_text import get_font_files as get_font_files_coretext, font_for_family as font_for_family_macos, find_font_features
+    from .core_text import font_for_family as font_for_family_macos
 else:
-    from .fontconfig import get_font_files as get_font_files_fontconfig, font_for_family as font_for_family_fontconfig, find_font_features
+    from .fontconfig import font_for_family as font_for_family_fontconfig
 
 FontObject = Union[CoreTextFont, FontConfigPattern]
-current_faces: List[Tuple[FontObject, bool, bool]] = []
+current_faces: list[tuple[FontObject, bool, bool]] = []
+builtin_nerd_font_descriptor: Optional[FontObject] = None
 
 
-def get_font_files(opts: OptionsStub) -> Dict[str, Any]:
-    if is_macos:
-        return get_font_files_coretext(opts)
-    return get_font_files_fontconfig(opts)
-
-
-def font_for_family(family: str) -> Tuple[FontObject, bool, bool]:
+def font_for_family(family: str) -> tuple[FontObject, bool, bool]:
     if is_macos:
         return font_for_family_macos(family)
     return font_for_family_fontconfig(family)
 
 
-Range = Tuple[Tuple[int, int], str]
-
-
-def merge_ranges(a: Range, b: Range, priority_map: Dict[Tuple[int, int], int]) -> Generator[Range, None, None]:
+def merge_ranges(
+    a: tuple[tuple[int, int], _T], b: tuple[tuple[int, int], _T], priority_map: dict[tuple[int, int], int]
+) -> Generator[tuple[tuple[int, int], _T], None, None]:
     a_start, a_end = a[0]
     b_start, b_end = b[0]
     a_val, b_val = a[1], b[1]
@@ -90,8 +95,8 @@ def merge_ranges(a: Range, b: Range, priority_map: Dict[Tuple[int, int], int]) -
             after_range = ((b_end + 1, a_end), a_val)
             after_range_prio = a_prio
     # check if the before, mid and after ranges can be coalesced
-    ranges: List[Range] = []
-    priorities: List[int] = []
+    ranges: list[tuple[tuple[int, int], _T]] = []
+    priorities: list[int] = []
     for rq, prio in ((before_range, before_range_prio), (mid_range, mid_range_prio), (after_range, after_range_prio)):
         if rq is None:
             continue
@@ -112,7 +117,7 @@ def merge_ranges(a: Range, b: Range, priority_map: Dict[Tuple[int, int], int]) -
     yield from ranges
 
 
-def coalesce_symbol_maps(maps: Dict[Tuple[int, int], str]) -> Dict[Tuple[int, int], str]:
+def coalesce_symbol_maps(maps: dict[tuple[int, int], _T]) -> dict[tuple[int, int], _T]:
     if not maps:
         return maps
     priority_map = {r: i for i, r in enumerate(maps.keys())}
@@ -136,13 +141,17 @@ def coalesce_symbol_maps(maps: Dict[Tuple[int, int], str]) -> Dict[Tuple[int, in
     return dict(ans)
 
 
-def create_symbol_map(opts: OptionsStub) -> Tuple[Tuple[int, int, int], ...]:
+def create_symbol_map(opts: Options) -> tuple[tuple[int, int, int], ...]:
     val = coalesce_symbol_maps(opts.symbol_map)
-    family_map: Dict[str, int] = {}
+    family_map: dict[str, int] = {}
     count = 0
     for family in val.values():
         if family not in family_map:
             font, bold, italic = font_for_family(family)
+            fkey = family_name_to_key(family)
+            if fkey in ('symbolsnfm', 'symbols nerd font mono') and font['postscript_name'] != 'SymbolsNFM' and builtin_nerd_font_descriptor:
+                font = builtin_nerd_font_descriptor
+                bold = italic = False
             family_map[family] = count
             count += 1
             current_faces.append((font, bold, italic))
@@ -150,62 +159,63 @@ def create_symbol_map(opts: OptionsStub) -> Tuple[Tuple[int, int, int], ...]:
     return sm
 
 
-def descriptor_for_idx(idx: int) -> Tuple[FontObject, bool, bool]:
+def create_narrow_symbols(opts: Options) -> tuple[tuple[int, int, int], ...]:
+    return tuple((a, b, v) for (a, b), v in coalesce_symbol_maps(opts.narrow_symbols).items())
+
+
+def descriptor_for_idx(idx: int) -> tuple[FontObject, bool, bool]:
     return current_faces[idx]
 
 
-def dump_faces(ftypes: List[str], indices: Dict[str, int]) -> None:
-    def face_str(f: Tuple[FontObject, bool, bool]) -> str:
-        fo = f[0]
-        if 'index' in fo:
-            return '{}:{}'.format(fo['path'], cast('FontConfigPattern', fo)['index'])
-        fo = cast('CoreTextFont', fo)
-        return fo['path']
-
-    log_error('Preloaded font faces:')
-    log_error('normal face:', face_str(current_faces[0]))
-    for ftype in ftypes:
-        if indices[ftype]:
-            log_error(ftype, 'face:', face_str(current_faces[indices[ftype]]))
-    si_faces = current_faces[max(indices.values())+1:]
-    if si_faces:
-        log_error('Symbol map faces:')
-        for face in si_faces:
-            log_error(face_str(face))
+def dump_font_debug() -> None:
+    cf = current_fonts()
+    log_error('Text fonts:')
+    for key, text in {'medium': 'Normal', 'bold': 'Bold', 'italic': 'Italic', 'bi': 'Bold-Italic'}.items():
+        log_error(f'  {text}:', cf[key].identify_for_debug())  # type: ignore
+    ss = cf['symbol']
+    if ss:
+        log_error('Symbol map fonts:')
+        for s in ss:
+            log_error('  ' + s.identify_for_debug())
 
 
-def set_font_family(opts: Optional[OptionsStub] = None, override_font_size: Optional[float] = None, debug_font_matching: bool = False) -> None:
-    global current_faces
+def set_font_family(opts: Optional[Options] = None, override_font_size: Optional[float] = None, add_builtin_nerd_font: bool = False) -> None:
+    global current_faces, builtin_nerd_font_descriptor
     opts = opts or defaults
     sz = override_font_size or opts.font_size
     font_map = get_font_files(opts)
     current_faces = [(font_map['medium'], False, False)]
-    ftypes = 'bold italic bi'.split()
+    ftypes: list[Literal['bold', 'italic', 'bi']] = ['bold', 'italic', 'bi']
     indices = {k: 0 for k in ftypes}
     for k in ftypes:
         if k in font_map:
             indices[k] = len(current_faces)
             current_faces.append((font_map[k], 'b' in k, 'i' in k))
     before = len(current_faces)
+    if add_builtin_nerd_font:
+        builtin_nerd_font_path = os.path.join(fonts_dir, 'SymbolsNerdFontMono-Regular.ttf')
+        if os.path.exists(builtin_nerd_font_path):
+            builtin_nerd_font_descriptor = set_builtin_nerd_font(builtin_nerd_font_path)
+        else:
+            log_error(f'No builtin NERD font found in {fonts_dir}')
     sm = create_symbol_map(opts)
+    ns = create_narrow_symbols(opts)
     num_symbol_fonts = len(current_faces) - before
-    font_features = {}
-    for face, _, _ in current_faces:
-        font_features[face['postscript_name']] = find_font_features(face['postscript_name'])
-    font_features.update(opts.font_features)
-    if debug_font_matching:
-        dump_faces(ftypes, indices)
     set_font_data(
         render_box_drawing, prerender_function, descriptor_for_idx,
         indices['bold'], indices['italic'], indices['bi'], num_symbol_fonts,
-        sm, sz, font_features
+        sm, sz, ns
     )
 
 
-UnderlineCallback = Callable[[ctypes.Array, int, int, int, int], None]
+if TYPE_CHECKING:
+    CBufType = ctypes.Array[ctypes.c_ubyte]
+else:
+    CBufType = None
+UnderlineCallback = Callable[[CBufType, int, int, int, int], None]
 
 
-def add_line(buf: ctypes.Array, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
+def add_line(buf: CBufType, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
     y = position - thickness // 2
     while thickness > 0 and -1 < y < cell_height:
         thickness -= 1
@@ -213,7 +223,7 @@ def add_line(buf: ctypes.Array, cell_width: int, position: int, thickness: int, 
         y += 1
 
 
-def add_dline(buf: ctypes.Array, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
+def add_dline(buf: CBufType, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
     a = min(position - thickness, cell_height - 1)
     b = min(position, cell_height - 1)
     top, bottom = min(a, b), max(a, b)
@@ -233,18 +243,17 @@ def add_dline(buf: ctypes.Array, cell_width: int, position: int, thickness: int,
         ctypes.memset(ctypes.addressof(buf) + (cell_width * y), 255, cell_width)
 
 
-def add_curl(buf: ctypes.Array, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
+def add_curl(buf: CBufType, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
     max_x, max_y = cell_width - 1, cell_height - 1
-    xfactor = 2.0 * pi / max_x
-    thickness = max(1, thickness)
-    if thickness < 3:
-        half_height = thickness
-        thickness -= 1
-    elif thickness == 3:
-        half_height = thickness = 2
+    opts = get_options()
+    xfactor = (4.0 if 'dense' in opts.undercurl_style else 2.0) * pi / max_x
+
+    max_height = cell_height - (position - thickness // 2)  # descender from the font
+    half_height = max(1, max_height // 4)
+    if 'thick' in opts.undercurl_style:
+        thickness = max(half_height, thickness)
     else:
-        half_height = thickness // 2
-        thickness -= 2
+        thickness = max(1, thickness) - (1 if thickness < 3 else 2)
 
     def add_intensity(x: int, y: int, val: int) -> None:
         y += position
@@ -270,6 +279,23 @@ def add_curl(buf: ctypes.Array, cell_width: int, position: int, thickness: int, 
             add_intensity(x, y1 + t, 255)
 
 
+def add_dots(buf: CBufType, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
+    spacing, size = distribute_dots(cell_width, cell_width // (2 * thickness))
+
+    y = 1 + position - thickness // 2
+    for i in range(y, min(y + thickness, cell_height)):
+        for j, s in enumerate(spacing):
+            buf[cell_width * i + j * size + s: cell_width * i + (j + 1) * size + s] = [255] * size
+
+
+def add_dashes(buf: CBufType, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
+    halfspace_width = cell_width // 4
+    y = 1 + position - thickness // 2
+    for i in range(y, min(y + thickness, cell_height)):
+        buf[cell_width * i:cell_width * i + (cell_width - 3 * halfspace_width)] = [255] * (cell_width - 3 * halfspace_width)
+        buf[cell_width * i + 3 * halfspace_width:cell_width * (i + 1)] = [255] * (cell_width - 3 * halfspace_width)
+
+
 def render_special(
     underline: int = 0,
     strikethrough: bool = False,
@@ -282,8 +308,8 @@ def render_special(
     strikethrough_thickness: int = 0,
     dpi_x: float = 96.,
     dpi_y: float = 96.,
-) -> ctypes.Array:
-    underline_position = min(underline_position, cell_height - underline_thickness)
+) -> CBufType:
+    underline_position = min(underline_position, cell_height - sum(divmod(underline_thickness, 2)))
     CharTexture = ctypes.c_ubyte * (cell_width * cell_height)
 
     if missing:
@@ -297,14 +323,13 @@ def render_special(
         try:
             f(ans, cell_width, *a)
         except Exception as e:
-            log_error('Failed to render {} at cell_width={} and cell_height={} with error: {}'.format(
-                f.__name__, cell_width, cell_height, e))
+            log_error(f'Failed to render {f.__name__} at cell_width={cell_width} and cell_height={cell_height} with error: {e}')
 
     if underline:
         t = underline_thickness
         if underline > 1:
             t = max(1, min(cell_height - underline_position - 1, t))
-        dl([add_line, add_line, add_dline, add_curl][underline], underline_position, t, cell_height)
+        dl([add_line, add_line, add_dline, add_curl, add_dots, add_dashes][underline], underline_position, t, cell_height)
     if strikethrough:
         dl(add_line, strikethrough_position, strikethrough_thickness, cell_height)
 
@@ -319,7 +344,7 @@ def render_cursor(
     cell_height: int = 0,
     dpi_x: float = 0,
     dpi_y: float = 0
-) -> ctypes.Array:
+) -> CBufType:
     CharTexture = ctypes.c_ubyte * (cell_width * cell_height)
     ans = CharTexture()
 
@@ -363,7 +388,7 @@ def prerender_function(
     cursor_underline_thickness: float,
     dpi_x: float,
     dpi_y: float
-) -> Tuple[Union[int, ctypes.Array], ...]:
+) -> tuple[tuple[int, ...], tuple[CBufType, ...]]:
     # Pre-render the special underline, strikethrough and missing and cursor cells
     f = partial(
         render_special, cell_width=cell_width, cell_height=cell_height, baseline=baseline,
@@ -375,11 +400,18 @@ def prerender_function(
         render_cursor, cursor_beam_thickness=cursor_beam_thickness,
         cursor_underline_thickness=cursor_underline_thickness, cell_width=cell_width,
         cell_height=cell_height, dpi_x=dpi_x, dpi_y=dpi_y)
-    cells = f(1), f(2), f(3), f(0, True), f(missing=True), c(1), c(2), c(3)
-    return tuple(map(ctypes.addressof, cells)) + (cells,)
+    # If you change the mapping of these cells you will need to change
+    # NUM_UNDERLINE_STYLES and BEAM_IDX in shader.c and STRIKE_SPRITE_INDEX in
+    # window.py and MISSING_GLYPH in font.c
+    cells = list(map(f, range(1, NUM_UNDERLINE_STYLES + 1)))  # underline sprites
+    cells.append(f(0, strikethrough=True))  # strikethrough sprite
+    cells.append(f(missing=True))  # missing glyph
+    cells.extend((c(1), c(2), c(3)))  # cursor glyphs
+    tcells = tuple(cells)
+    return tuple(map(ctypes.addressof, tcells)), tcells
 
 
-def render_box_drawing(codepoint: int, cell_width: int, cell_height: int, dpi: float) -> Tuple[int, ctypes.Array]:
+def render_box_drawing(codepoint: int, cell_width: int, cell_height: int, dpi: float) -> tuple[int, CBufType]:
     CharTexture = ctypes.c_ubyte * (cell_width * cell_height)
     buf = CharTexture()
     render_box_char(
@@ -393,8 +425,8 @@ class setup_for_testing:
     def __init__(self, family: str = 'monospace', size: float = 11.0, dpi: float = 96.0):
         self.family, self.size, self.dpi = family, size, dpi
 
-    def __enter__(self) -> Tuple[Dict[Tuple[int, int, int], bytes], int, int]:
-        opts = defaults._replace(font_family=self.family, font_size=self.size)
+    def __enter__(self) -> tuple[dict[tuple[int, int, int], bytes], int, int]:
+        opts = defaults._replace(font_family=parse_font_spec(self.family), font_size=self.size)
         set_options(opts)
         sprites = {}
 
@@ -415,7 +447,7 @@ class setup_for_testing:
         set_send_sprite_to_gpu(None)
 
 
-def render_string(text: str, family: str = 'monospace', size: float = 11.0, dpi: float = 96.0) -> Tuple[int, int, List[bytes]]:
+def render_string(text: str, family: str = 'monospace', size: float = 11.0, dpi: float = 96.0) -> tuple[int, int, list[bytes]]:
     with setup_for_testing(family, size, dpi) as (sprites, cell_width, cell_height):
         s = Screen(None, 1, len(text)*2)
         line = s.line(0)
@@ -436,7 +468,7 @@ def render_string(text: str, family: str = 'monospace', size: float = 11.0, dpi:
 
 def shape_string(
     text: str = "abcd", family: str = 'monospace', size: float = 11.0, dpi: float = 96.0, path: Optional[str] = None
-) -> List[Tuple[int, int, int, Tuple[int, ...]]]:
+) -> list[tuple[int, int, int, tuple[int, ...]]]:
     with setup_for_testing(family, size, dpi) as (sprites, cell_width, cell_height):
         s = Screen(None, 1, len(text)*2)
         line = s.line(0)
@@ -444,16 +476,30 @@ def shape_string(
         return test_shape(line, path)
 
 
+def show(rgba_data: bytes, width: int, height: int, fmt: int = 32) -> None:
+    from base64 import standard_b64encode
+
+    from kittens.tui.images import GraphicsCommand
+
+    data = memoryview(standard_b64encode(rgba_data))
+    cmd = GraphicsCommand()
+    cmd.a = 'T'
+    cmd.f = fmt
+    cmd.s = width
+    cmd.v = height
+
+    while data:
+        chunk, data = data[:4096], data[4096:]
+        cmd.m = 1 if data else 0
+        sys.stdout.buffer.write(cmd.serialize(chunk))
+        cmd.clear()
+    sys.stdout.flush()
+    sys.stdout.buffer.flush()
+
+
 def display_bitmap(rgb_data: bytes, width: int, height: int) -> None:
-    from tempfile import NamedTemporaryFile
-    from kittens.icat.main import detect_support, show
-    if not hasattr(display_bitmap, 'detected') and not detect_support():
-        raise SystemExit('Your terminal does not support the graphics protocol')
-    setattr(display_bitmap, 'detected', True)
-    with NamedTemporaryFile(suffix='.rgba', delete=False) as f:
-        f.write(rgb_data)
     assert len(rgb_data) == 4 * width * height
-    show(f.name, width, height, 0, 32, align='left')
+    show(rgb_data, width, height)
 
 
 def test_render_string(
@@ -467,8 +513,8 @@ def test_render_string(
     cell_width, cell_height, cells = render_string(text, family, size, dpi)
     rgb_data = concat_cells(cell_width, cell_height, True, tuple(cells))
     cf = current_fonts()
-    fonts = [cf['medium'].display_name()]
-    fonts.extend(f.display_name() for f in cf['fallback'])
+    fonts = [cf['medium'].postscript_name()]
+    fonts.extend(f.postscript_name() for f in cf['fallback'])
     msg = 'Rendered string {} below, with fonts: {}\n'.format(text, ', '.join(fonts))
     try:
         print(msg)
@@ -489,7 +535,7 @@ def test_fallback_font(qtext: Optional[str] = None, bold: bool = False, italic: 
             try:
                 print(text, f)
             except UnicodeEncodeError:
-                sys.stdout.buffer.write((text + ' %s\n' % f).encode('utf-8'))
+                sys.stdout.buffer.write(f'{text} {f}\n'.encode())
 
 
 def showcase() -> None:

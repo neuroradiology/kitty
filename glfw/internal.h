@@ -34,6 +34,9 @@
 #endif
 
 #define arraysz(x) (sizeof(x)/sizeof(x[0]))
+#define MAX(x, y) __extension__ ({ \
+    __typeof__ (x) a = (x); __typeof__ (y) b = (y); \
+        a > b ? a : b;})
 
 #if defined(GLFW_INCLUDE_GLCOREARB) || \
     defined(GLFW_INCLUDE_ES1)       || \
@@ -51,6 +54,8 @@
 
 #define GLFW_INCLUDE_NONE
 #include "glfw3.h"
+
+#define EGL_PRESENT_OPAQUE_EXT 0x31df
 
 #define _GLFW_INSERT_FIRST      0
 #define _GLFW_INSERT_LAST       1
@@ -87,11 +92,11 @@ typedef int (* _GLFWextensionsupportedfun)(const char*);
 typedef GLFWglproc (* _GLFWgetprocaddressfun)(const char*);
 typedef void (* _GLFWdestroycontextfun)(_GLFWwindow*);
 
-#define GL_VERSION 0x1f02
+#define GL_VERSION 0x1F02
 #define GL_NONE 0
 #define GL_COLOR_BUFFER_BIT 0x00004000
 #define GL_UNSIGNED_BYTE 0x1401
-#define GL_EXTENSIONS 0x1f03
+#define GL_EXTENSIONS 0x1F03
 #define GL_NUM_EXTENSIONS 0x821d
 #define GL_CONTEXT_FLAGS 0x821e
 #define GL_CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT 0x00000001
@@ -105,6 +110,13 @@ typedef void (* _GLFWdestroycontextfun)(_GLFWwindow*);
 #define GL_CONTEXT_RELEASE_BEHAVIOR 0x82fb
 #define GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH 0x82fc
 #define GL_CONTEXT_FLAG_NO_ERROR_BIT_KHR 0x00000008
+
+#define MAX(x, y) __extension__ ({ \
+    __typeof__ (x) a = (x); __typeof__ (y) b = (y); \
+        a > b ? a : b;})
+#define MIN(x, y) __extension__ ({ \
+    __typeof__ (x) a = (x); __typeof__ (y) b = (y); \
+        a < b ? a : b;})
 
 typedef int GLint;
 typedef unsigned int GLuint;
@@ -204,7 +216,7 @@ typedef void (APIENTRY * PFN_vkVoidFunction)(void);
 #define remove_i_from_array(array, i, count) { \
     (count)--; \
     if ((i) < (count)) { \
-        memmove((array) + (i), (array) + (i) + 1, sizeof((array)[0]) * ((count) - (i))); \
+        memmove((array) + (i), (array) + (i) + 1, sizeof((array)[0]) * ((count) - (i))); /* NOLINT(bugprone-sizeof-expression) */ \
     }}
 
 
@@ -281,6 +293,9 @@ struct _GLFWinitconfig
         bool      menubar;
         bool      chdir;
     } ns;
+    struct {
+        bool ime;
+    } wl;
 };
 
 // Window configuration
@@ -305,8 +320,10 @@ struct _GLFWwndconfig
     bool          focusOnShow;
     bool          mousePassthrough;
     bool          scaleToMonitor;
+    int           blur_radius;
     struct {
         bool      retina;
+        int       color_space;
         char      frameName[256];
     } ns;
     struct {
@@ -315,6 +332,7 @@ struct _GLFWwndconfig
     } x11;
     struct {
         char      appId[256];
+        uint32_t  bgcolor;
     } wl;
 };
 
@@ -402,11 +420,6 @@ struct _GLFWcontext
     _GLFWcontextOSMesa osmesa;
 };
 
-typedef struct GLFWKeyState {
-    uint32_t key;
-    char action;
-} GLFWKeyState;
-
 // Window and context structure
 //
 struct _GLFWwindow
@@ -437,12 +450,17 @@ struct _GLFWwindow
     bool                lockKeyMods;
     int                 cursorMode;
     char                mouseButtons[GLFW_MOUSE_BUTTON_LAST + 1];
-    GLFWKeyState        activated_keys[16];
+    GLFWkeyevent        activated_keys[16];
     // Virtual cursor position when cursor is disabled
     double              virtualCursorPosX, virtualCursorPosY;
     bool                rawMouseMotion;
 
     _GLFWcontext        context;
+#ifdef _GLFW_WAYLAND
+    bool                swaps_disallowed;
+#else
+    const bool                swaps_disallowed;
+#endif
 
     struct {
         GLFWwindowposfun        pos;
@@ -558,6 +576,13 @@ struct _GLFWmutex
     _GLFW_PLATFORM_MUTEX_STATE;
 };
 
+typedef struct _GLFWClipboardData {
+    const char** mime_types;
+    size_t num_mime_types;
+    GLFWclipboarditerfun get_data;
+    GLFWClipboardType ctype;
+} _GLFWClipboardData;
+
 // Library global data
 //
 struct _GLFWlibrary
@@ -571,6 +596,8 @@ struct _GLFWlibrary
         _GLFWctxconfig  context;
         int             refreshRate;
     } hints;
+
+    _GLFWClipboardData primary, clipboard;
 
     _GLFWerror*         errorListHead;
     _GLFWcursor*        cursorListHead;
@@ -588,6 +615,8 @@ struct _GLFWlibrary
     _GLFWtls            errorSlot;
     _GLFWtls            contextSlot;
     _GLFWmutex          errorLock;
+
+    bool                ignoreOSKeyboardProcessing;
 
     struct {
         bool            available;
@@ -615,9 +644,12 @@ struct _GLFWlibrary
         GLFWmonitorfun  monitor;
         GLFWjoystickfun joystick;
         GLFWapplicationclosefun application_close;
+        GLFWsystemcolorthemechangefun system_color_theme_change;
         GLFWdrawtextfun draw_text;
+        GLFWcurrentselectionfun get_current_selection;
+        GLFWhascurrentselectionfun has_current_selection;
+        GLFWimecursorpositionfun get_ime_cursor_position;
     } callbacks;
-
 
     // This is defined in the window API's platform.h
     _GLFW_PLATFORM_LIBRARY_WINDOW_STATE;
@@ -664,16 +696,12 @@ void _glfwPlatformGetMonitorContentScale(_GLFWmonitor* monitor,
                                          float* xscale, float* yscale);
 void _glfwPlatformGetMonitorWorkarea(_GLFWmonitor* monitor, int* xpos, int* ypos, int *width, int *height);
 GLFWvidmode* _glfwPlatformGetVideoModes(_GLFWmonitor* monitor, int* count);
-void _glfwPlatformGetVideoMode(_GLFWmonitor* monitor, GLFWvidmode* mode);
+bool _glfwPlatformGetVideoMode(_GLFWmonitor* monitor, GLFWvidmode* mode);
 bool _glfwPlatformGetGammaRamp(_GLFWmonitor* monitor, GLFWgammaramp* ramp);
 void _glfwPlatformSetGammaRamp(_GLFWmonitor* monitor, const GLFWgammaramp* ramp);
 
-void _glfwPlatformSetClipboardString(const char* string);
-const char* _glfwPlatformGetClipboardString(void);
-#if defined(_GLFW_X11) || defined(_GLFW_WAYLAND)
-void _glfwPlatformSetPrimarySelectionString(const char* string);
-const char* _glfwPlatformGetPrimarySelectionString(void);
-#endif
+void _glfwPlatformSetClipboard(GLFWClipboardType t);
+void _glfwPlatformGetClipboard(GLFWClipboardType clipboard_type, const char* mime_type, GLFWclipboardwritedatafun write_data, void *object);
 
 bool _glfwPlatformInitJoysticks(void);
 void _glfwPlatformTerminateJoysticks(void);
@@ -717,6 +745,7 @@ void _glfwPlatformSetWindowMonitor(_GLFWwindow* window, _GLFWmonitor* monitor,
                                    int xpos, int ypos, int width, int height,
                                    int refreshRate);
 bool _glfwPlatformToggleFullscreen(_GLFWwindow *w, unsigned int flags);
+bool _glfwPlatformIsFullscreen(_GLFWwindow *w, unsigned int flags);
 int _glfwPlatformWindowFocused(_GLFWwindow* window);
 int _glfwPlatformWindowOccluded(_GLFWwindow* window);
 int _glfwPlatformWindowIconified(_GLFWwindow* window);
@@ -785,6 +814,8 @@ void _glfwInputMouseClick(_GLFWwindow* window, int button, int action, int mods)
 void _glfwInputCursorPos(_GLFWwindow* window, double xpos, double ypos);
 void _glfwInputCursorEnter(_GLFWwindow* window, bool entered);
 int _glfwInputDrop(_GLFWwindow* window, const char *mime, const char *text, size_t sz);
+void _glfwInputColorScheme(GLFWColorScheme);
+void _glfwPlatformInputColorScheme(GLFWColorScheme);
 void _glfwInputJoystick(_GLFWjoystick* js, int event);
 void _glfwInputJoystickAxis(_GLFWjoystick* js, int axis, float value);
 void _glfwInputJoystickButton(_GLFWjoystick* js, int button, char value);
@@ -846,5 +877,11 @@ void _glfwPlatformStopMainLoop(void);
 unsigned long long _glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLFWuserdatafun callback, void *callback_data, GLFWuserdatafun free_callback);
 void _glfwPlatformUpdateTimer(unsigned long long timer_id, monotonic_t interval, bool enabled);
 void _glfwPlatformRemoveTimer(unsigned long long timer_id);
+int _glfwPlatformSetWindowBlur(_GLFWwindow* handle, int value);
 
 char* _glfw_strdup(const char* source);
+
+void _glfw_free_clipboard_data(_GLFWClipboardData *cd);
+
+#define debug_rendering(...) if (_glfw.hints.init.debugRendering) { timed_debug_print(__VA_ARGS__); }
+#define debug_input(...) if (_glfw.hints.init.debugKeyboard) { timed_debug_print(__VA_ARGS__); }

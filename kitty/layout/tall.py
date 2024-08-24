@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 from itertools import islice, repeat
@@ -12,8 +11,15 @@ from kitty.typing import EdgeLiteral, WindowType
 from kitty.window_list import WindowGroup, WindowList
 
 from .base import (
-    BorderLine, Layout, LayoutData, LayoutDimension, LayoutOpts, NeighborsMap,
-    lgd, normalize_biases, safe_increment_bias, variable_bias
+    BorderLine,
+    Layout,
+    LayoutData,
+    LayoutDimension,
+    LayoutOpts,
+    NeighborsMap,
+    lgd,
+    normalize_biases,
+    safe_increment_bias,
 )
 from .vertical import borders
 
@@ -55,7 +61,7 @@ def neighbors_for_tall_window(
 
 
 class TallLayoutOpts(LayoutOpts):
-    bias: Tuple[float, ...] = ()
+    bias: int = 50
     full_size: int = 1
     mirrored: bool = False
 
@@ -64,14 +70,32 @@ class TallLayoutOpts(LayoutOpts):
             self.full_size = int(data.get('full_size', 1))
         except Exception:
             self.full_size = 1
-        self.full_size = fs = max(1, min(self.full_size, 100))
+        self.full_size = max(1, min(self.full_size, 100))
         try:
-            b = int(data.get('bias', 50)) / 100
+            self.bias = int(data.get('bias', 50))
         except Exception:
-            b = 0.5
-        b = max(0.1, min(b, 0.9))
-        self.bias = tuple(repeat(b / fs, fs)) + (1.0 - b,)
+            self.bias = 50
         self.mirrored = to_bool(data.get('mirrored', 'false'))
+
+    def serialized(self) -> Dict[str, Any]:
+        return {'full_size': self.full_size, 'bias': self.bias, 'mirrored': self.mirrored}
+
+    def build_bias_list(self) -> Tuple[float, ...]:
+        b = self.bias / 100
+        b = max(0.1, min(b, 0.9))
+        return tuple(repeat(b / self.full_size, self.full_size)) + (1.0 - b,)
+
+
+def set_bias(biases: Sequence[float], idx: int, target: float) -> List[float]:
+    remainder = 1 - target
+    previous_remainder = sum(x for i, x in enumerate(biases) if i != idx)
+    ans = [1. for i in range(len(biases))]
+    for i in range(len(biases)):
+        if i == idx:
+            ans[i] = target
+        else:
+            ans[i] = remainder * biases[i] / previous_remainder
+    return ans
 
 
 class Tall(Layout):
@@ -88,14 +112,25 @@ class Tall(Layout):
         return self.layout_opts.full_size
 
     def remove_all_biases(self) -> bool:
-        self.main_bias: List[float] = list(self.layout_opts.bias)
+        self.main_bias: List[float] = list(self.layout_opts.build_bias_list())
         self.biased_map: Dict[int, float] = {}
         return True
 
     def variable_layout(self, all_windows: WindowList, biased_map: Dict[int, float]) -> LayoutDimension:
         num = all_windows.num_groups - self.num_full_size_windows
-        bias = variable_bias(num, biased_map) if num > 1 else None
+        bias = biased_map if num > 1 else None
         return self.perp_axis_layout(all_windows.iter_all_layoutable_groups(), bias=bias, offset=self.num_full_size_windows)
+
+    def bias_slot(self, all_windows: WindowList, idx: int, fractional_bias: float, cell_increment_bias_h: float, cell_increment_bias_v: float) -> bool:
+        if idx < len(self.main_bias):
+            before_main_bias = self.main_bias
+            self.main_bias = set_bias(self.main_bias, idx, fractional_bias)
+            return self.main_bias != before_main_bias
+
+        before_layout = tuple(self.variable_layout(all_windows, self.biased_map))
+        self.biased_map[idx - self.num_full_size_windows] = cell_increment_bias_v if self.main_is_horizontal else cell_increment_bias_h
+        after_layout = tuple(self.variable_layout(all_windows, self.biased_map))
+        return before_layout == after_layout
 
     def apply_bias(self, idx: int, increment: float, all_windows: WindowList, is_horizontal: bool = True) -> bool:
         num_windows = all_windows.num_groups
@@ -113,11 +148,11 @@ class Tall(Layout):
         if idx < self.num_full_size_windows or num_of_short_windows < 2:
             return False
         idx -= self.num_full_size_windows
-        before_layout = list(self.variable_layout(all_windows, self.biased_map))
+        before_layout = tuple(self.variable_layout(all_windows, self.biased_map))
         before = self.biased_map.get(idx, 0.)
         candidate = self.biased_map.copy()
         candidate[idx] = after = before + increment
-        if before_layout == list(self.variable_layout(all_windows, candidate)):
+        if before_layout == tuple(self.variable_layout(all_windows, candidate)):
             return False
         self.biased_map = candidate
         return before != after
@@ -169,7 +204,7 @@ class Tall(Layout):
                 if is_fat:
                     xl, yl = yl, xl
                 yield wg, xl, yl, True
-            size = (lgd.central.bottom if is_fat else lgd.central.right) - start
+            size = 1 + (lgd.central.bottom if is_fat else lgd.central.right) - start
 
         ylayout = self.variable_layout(all_windows, self.biased_map)
         for i, wg in enumerate(all_windows.iter_all_layoutable_groups()):
@@ -196,11 +231,42 @@ class Tall(Layout):
     def layout_action(self, action_name: str, args: Sequence[str], all_windows: WindowList) -> Optional[bool]:
         if action_name == 'increase_num_full_size_windows':
             self.layout_opts.full_size += 1
+            self.main_bias = list(self.layout_opts.build_bias_list())
             return True
         if action_name == 'decrease_num_full_size_windows':
             if self.layout_opts.full_size > 1:
                 self.layout_opts.full_size -= 1
+                self.main_bias = list(self.layout_opts.build_bias_list())
                 return True
+        if action_name == 'mirror':
+            action = (args or ('toggle',))[0]
+            ok = False
+            if action == 'toggle':
+                self.layout_opts.mirrored = not self.layout_opts.mirrored
+                ok = True
+            else:
+                new_val = to_bool(action)
+                if new_val != self.layout_opts.mirrored:
+                    self.layout_opts.mirrored = new_val
+                    ok = True
+            return ok
+        if action_name == 'bias':
+            if len(args) == 0:
+                raise ValueError('layout_action bias must contain at least one number between 10 and 90')
+            biases = args[0].split()
+            if len(biases) == 1:
+                biases.append("50")
+            try:
+                i = biases.index(str(self.layout_opts.bias)) + 1
+            except ValueError:
+                i = 0
+            try:
+                self.layout_opts.bias = int(biases[i % len(biases)])
+                self.remove_all_biases()
+                return True
+            except Exception:
+                return False
+        return None
 
     def minimal_borders(self, all_windows: WindowList) -> Generator[BorderLine, None, None]:
         num = all_windows.num_groups

@@ -64,10 +64,11 @@ typedef void* CVDisplayLinkRef;
  #define NSOpenGLContextParameterSurfaceOpacity NSOpenGLCPSurfaceOpacity
 #endif
 
+#define debug_key(...) if (_glfw.hints.init.debugKeyboard) { fprintf(stderr, __VA_ARGS__); fflush(stderr); }
 
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int, unsigned long);
 typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
-typedef bool (* GLFWhandlefileopen)(const char*);
+typedef bool (* GLFWhandleurlopen)(const char*);
 typedef void (* GLFWapplicationwillfinishlaunchingfun)(void);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
@@ -130,6 +131,7 @@ typedef struct _GLFWwindowNS
     bool            maximized;
     bool            retina;
     bool            in_traditional_fullscreen;
+    bool            in_fullscreen_transition;
     bool            titlebar_hidden;
     unsigned long   pre_full_screen_style_mask;
 
@@ -137,6 +139,7 @@ typedef struct _GLFWwindowNS
     int             width, height;
     int             fbWidth, fbHeight;
     float           xscale, yscale;
+    int             blur_radius;
 
     // The total sum of the distances the cursor has been warped
     // since the last cursor motion event was processed
@@ -152,6 +155,9 @@ typedef struct _GLFWwindowNS
     // Whether a render frame has been requested for this window
     bool renderFrameRequested;
     GLFWcocoarenderframefun renderFrameCallback;
+    // update cursor after switching desktops with Mission Control
+    bool delayed_cursor_update_requested;
+    GLFWcocoarenderframefun resizeCallback;
 } _GLFWwindowNS;
 
 typedef struct _GLFWDisplayLinkNS
@@ -173,13 +179,12 @@ typedef struct _GLFWlibraryNS
     IOHIDManagerRef     hidManager;
     id                  unicodeData;
     id                  helper;
-    id                  keyUpMonitor;
-    id                  keyDownMonitor;
+    id                  keyUpMonitor, keyDownMonitor, flagsChangedMonitor;
+    id                  appleSettings;
     id                  nibObjects;
 
     char                keyName[64];
-    char                text[256];
-    char*               clipboardString;
+    char                text[512];
     CGPoint             cascadePoint;
     // Where to place the cursor when re-enabled
     double              restoreCursorPosX, restoreCursorPosY;
@@ -198,8 +203,8 @@ typedef struct _GLFWlibraryNS
         _GLFWDisplayLinkNS entries[256];
         size_t count;
     } displayLinks;
-    // the callback to handle file open events
-    GLFWhandlefileopen file_open_callback;
+    // the callback to handle url open events
+    GLFWhandleurlopen url_open_callback;
 
 } _GLFWlibraryNS;
 
@@ -231,7 +236,6 @@ typedef struct _GLFWtimerNS
 
 } _GLFWtimerNS;
 
-
 void _glfwPollMonitorsNS(void);
 void _glfwSetVideoModeNS(_GLFWmonitor* monitor, const GLFWvidmode* desired);
 void _glfwRestoreVideoModeNS(_GLFWmonitor* monitor);
@@ -247,3 +251,5 @@ void _glfwDispatchRenderFrame(CGDirectDisplayID);
 void _glfwShutdownCVDisplayLink(unsigned long long, void*);
 void _glfwCocoaPostEmptyEvent(void);
 void _glfw_create_cv_display_link(_GLFWDisplayLinkNS *entry);
+_GLFWDisplayLinkNS* _glfw_create_display_link(CGDirectDisplayID);
+uint32_t vk_to_unicode_key_with_current_layout(uint16_t keycode);

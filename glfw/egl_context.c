@@ -326,6 +326,7 @@ bool _glfwInitEGL(void)
     glfw_dlsym(_glfw.egl.SwapBuffers, _glfw.egl.handle, "eglSwapBuffers");
     glfw_dlsym(_glfw.egl.SwapInterval, _glfw.egl.handle, "eglSwapInterval");
     glfw_dlsym(_glfw.egl.QueryString, _glfw.egl.handle, "eglQueryString");
+    glfw_dlsym(_glfw.egl.QuerySurface, _glfw.egl.handle, "eglQuerySurface");
     glfw_dlsym(_glfw.egl.GetProcAddress, _glfw.egl.handle, "eglGetProcAddress");
 
     if (!_glfw.egl.GetConfigAttrib ||
@@ -428,6 +429,8 @@ bool _glfwInitEGL(void)
         extensionSupportedEGL("EGL_KHR_get_all_proc_addresses");
     _glfw.egl.KHR_context_flush_control =
         extensionSupportedEGL("EGL_KHR_context_flush_control");
+    _glfw.egl.EXT_present_opaque =
+        extensionSupportedEGL("EGL_EXT_present_opaque");
 
     return true;
 }
@@ -598,6 +601,11 @@ bool _glfwCreateContextEGL(_GLFWwindow* window,
         if (_glfw.egl.KHR_gl_colorspace)
             setAttrib(EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_SRGB_KHR);
     }
+    // Disabled because it prevents transparency from working on NVIDIA drivers under Wayland
+    // https://github.com/kovidgoyal/kitty/issues/5479
+    // We anyway dont use the alpha bits for anything.
+    /* if (_glfw.egl.EXT_present_opaque) */
+    /*     setAttrib(EGL_PRESENT_OPAQUE_EXT, !fbconfig->transparent); */
 
     setAttrib(EGL_NONE, EGL_NONE);
 

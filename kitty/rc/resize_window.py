@@ -1,29 +1,25 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 from typing import TYPE_CHECKING, Optional, Union
 
-from .base import (
-    MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType,
-    PayloadType, RCOptions, RemoteCommand, ResponseType, Window
-)
+from .base import MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand, ResponseType, Window
 
 if TYPE_CHECKING:
     from kitty.cli_stub import ResizeWindowRCOptions as CLIOptions
 
 
 class ResizeWindow(RemoteCommand):
-    '''
-    match: Which window to resize
-    self: Boolean indicating whether to close the window the command is run in
-    increment: Integer specifying the resize increment
-    axis: One of :code:`horizontal, vertical` or :code:`reset`
+    protocol_spec = __doc__ = '''
+    match/str: Which window to resize
+    self/bool: Boolean indicating whether to resize the window the command is run in
+    increment/int: Integer specifying the resize increment
+    axis/choices.horizontal.vertical.reset: One of :code:`horizontal, vertical` or :code:`reset`
     '''
 
-    short_desc = 'Resize the specified window'
+    short_desc = 'Resize the specified windows'
     desc = (
-        'Resize the specified window in the current layout.'
+        'Resize the specified windows in the current layout.'
         ' Note that not all layouts can resize all windows in all directions.'
     )
     options_spec = MATCH_WINDOW_OPTION + '''\n
@@ -37,17 +33,16 @@ The number of cells to change the size by, can be negative to decrease the size.
 type=choices
 choices=horizontal,vertical,reset
 default=horizontal
-The axis along which to resize. If :italic:`horizontal`,
+The axis along which to resize. If :code:`horizontal`,
 it will make the window wider or narrower by the specified increment.
-If :italic:`vertical`, it will make the window taller or shorter by the specified increment.
-The special value :italic:`reset` will reset the layout to its default configuration.
+If :code:`vertical`, it will make the window taller or shorter by the specified increment.
+The special value :code:`reset` will reset the layout to its default configuration.
 
 
 --self
 type=bool-set
-If specified resize the window this command is run in, rather than the active window.
+Resize the window this command is run in, rather than the active window.
 '''
-    argspec = ''
     string_return_is_error = True
 
     def message_to_kitty(self, global_opts: RCOptions, opts: 'CLIOptions', args: ArgsType) -> PayloadType:

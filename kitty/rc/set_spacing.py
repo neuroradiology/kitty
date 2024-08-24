@@ -1,18 +1,14 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 
-from typing import TYPE_CHECKING, Dict, Optional, List
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
 
-from .base import (
-    MATCH_TAB_OPTION, MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType,
-    PayloadType, RCOptions, RemoteCommand, ResponseType, Window
-)
+from .base import MATCH_TAB_OPTION, MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand, ResponseType, Window
 
 if TYPE_CHECKING:
     from kitty.cli_stub import SetSpacingRCOptions as CLIOptions
-    from kitty.options_stub import Options
+    from kitty.options.types import Options
 
 
 def patch_window_edges(w: Window, s: Dict[str, Optional[float]]) -> None:
@@ -38,65 +34,73 @@ def patch_configured_edges(opts: 'Options', s: Dict[str, Optional[float]]) -> No
         setattr(opts, q, new_edges)
 
 
+def parse_spacing_settings(args: Iterable[str]) -> Dict[str, Optional[float]]:
+    mapper: Dict[str, List[str]] = {}
+    for q in ('margin', 'padding'):
+        mapper[q] = f'{q}-left {q}-top {q}-right {q}-bottom'.split()
+        mapper[f'{q}-h'] = mapper[f'{q}-horizontal'] = f'{q}-left {q}-right'.split()
+        mapper[f'{q}-v'] = mapper[f'{q}-vertical'] = f'{q}-top {q}-bottom'.split()
+        for edge in ('left', 'top', 'right', 'bottom'):
+            mapper[f'{q}-{edge}'] = [f'{q}-{edge}']
+    settings: Dict[str, Optional[float]] = {}
+    for spec in args:
+        parts = spec.split('=', 1)
+        if len(parts) != 2:
+            raise ValueError(f'{spec} is not a valid setting')
+        which = mapper.get(parts[0].lower())
+        if not which:
+            raise ValueError(f'{parts[0]} is not a valid edge specification')
+        if parts[1].lower() == 'default':
+            val = None
+        else:
+            try:
+                val = float(parts[1])
+            except Exception:
+                raise ValueError(f'{parts[1]} is not a number')
+        for q in which:
+            settings[q] = val
+    return settings
+
+
 class SetSpacing(RemoteCommand):
 
-    '''
-    settings+: An object mapping margins/paddings using canonical form {'margin-top': 50, 'padding-left': null} etc
-    match_window: Window to change colors in
-    match_tab: Tab to change colors in
-    all: Boolean indicating change colors everywhere or not
-    configured: Boolean indicating whether to change the configured colors. Must be True if reset is True
+    protocol_spec = __doc__ = '''
+    settings+/dict.spacing: An object mapping margins/paddings using canonical form {'margin-top': 50, 'padding-left': null} etc
+    match_window/str: Window to change paddings and margins in
+    match_tab/str: Tab to change paddings and margins in
+    all/bool: Boolean indicating change paddings and margins everywhere or not
+    configured/bool: Boolean indicating whether to change the configured paddings and margins. Must be True if reset is True
     '''
 
-    short_desc = 'Set window padding and margins'
+    short_desc = 'Set window paddings and margins'
     desc = (
-        'Set the padding and margins for the specified windows (defaults to active window).'
-        ' For example: margin=20 or padding-left=10 or margin-h=30. The shorthand form sets'
+        'Set the paddings and margins for the specified windows (defaults to active window).'
+        ' For example: :code:`margin=20` or :code:`padding-left=10` or :code:`margin-h=30`. The shorthand form sets'
         ' all values, the :code:`*-h` and :code:`*-v` variants set horizontal and vertical values.'
-        ' The special value "default" resets to using the default value.'
+        ' The special value :code:`default` resets to using the default value.'
         ' If you specify a tab rather than a window, all windows in that tab are affected.'
     )
     options_spec = '''\
 --all -a
 type=bool-set
 By default, settings are only changed for the currently active window. This option will
-cause colors to be changed in all windows.
+cause paddings and margins to be changed in all windows.
 
 
 --configured -c
 type=bool-set
-Also change the configured padding and margins (i.e. the settings kitty will use for new
+Also change the configured paddings and margins (i.e. the settings kitty will use for new
 windows).
 ''' + '\n\n' + MATCH_WINDOW_OPTION + '\n\n' + MATCH_TAB_OPTION.replace('--match -m', '--match-tab -t')
-    argspec = 'MARGIN_OR_PADDING ...'
+    args = RemoteCommand.Args(spec='MARGIN_OR_PADDING ...', minimum_count=1, json_field='settings', special_parse='parse_set_spacing(args)')
 
     def message_to_kitty(self, global_opts: RCOptions, opts: 'CLIOptions', args: ArgsType) -> PayloadType:
-        settings: Dict[str, Optional[float]] = {}
-        mapper: Dict[str, List[str]] = {}
-        for q in ('margin', 'padding'):
-            mapper[q] = f'{q}-left {q}-top {q}-right {q}-bottom'.split()
-            mapper[f'{q}-h'] = mapper[f'{q}-horizontal'] = f'{q}-left {q}-right'.split()
-            mapper[f'{q}-v'] = mapper[f'{q}-vertical'] = f'{q}-top {q}-bottom'.split()
-            for edge in ('left', 'top', 'right', 'bottom'):
-                mapper[f'{q}-{edge}'] = [f'{q}-{edge}']
         if not args:
             self.fatal('At least one setting must be specified')
-        for spec in args:
-            parts = spec.split('=', 1)
-            if len(parts) != 2:
-                self.fatal(f'{spec} is not a valid setting')
-            which = mapper.get(parts[0].lower())
-            if not which:
-                self.fatal(f'{parts[0]} is not a valid edge specification')
-            if parts[1].lower() == 'default':
-                val = None
-            else:
-                try:
-                    val = float(parts[1])
-                except Exception:
-                    self.fatal(f'{parts[1]} is not a number')
-            for q in which:
-                settings[q] = val
+        try:
+            settings = parse_spacing_settings(args)
+        except Exception as e:
+            self.fatal(str(e))
         ans = {
             'match_window': opts.match, 'match_tab': opts.match_tab,
             'all': opts.all, 'configured': opts.configured,
@@ -113,13 +117,15 @@ windows).
             patch_configured_edges(get_options(), settings)
 
         for w in windows:
-            patch_window_edges(w, settings)
-            tab = w.tabref()
-            if tab is not None:
-                dirtied_tabs[tab.id] = tab
+            if w:
+                patch_window_edges(w, settings)
+                tab = w.tabref()
+                if tab is not None:
+                    dirtied_tabs[tab.id] = tab
 
         for tab in dirtied_tabs.values():
             tab.relayout()
+        return None
 
 
 set_spacing = SetSpacing()

@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 from typing import Any, Dict, Generator, Iterable, List, Tuple
@@ -9,10 +8,7 @@ from kitty.types import Edges
 from kitty.typing import WindowType
 from kitty.window_list import WindowGroup, WindowList
 
-from .base import (
-    BorderLine, Layout, LayoutData, LayoutDimension, NeighborsMap,
-    lgd, variable_bias
-)
+from .base import BorderLine, Layout, LayoutData, LayoutDimension, NeighborsMap, lgd
 
 
 def borders(
@@ -72,7 +68,7 @@ class Vertical(Layout):
 
     def variable_layout(self, all_windows: WindowList, biased_map: Dict[int, float]) -> LayoutDimension:
         num_windows = all_windows.num_groups
-        bias = variable_bias(num_windows, biased_map) if num_windows else None
+        bias = biased_map if num_windows > 1 else None
         return self.main_axis_layout(all_windows.iter_all_layoutable_groups(), bias=bias)
 
     def fixed_layout(self, wg: WindowGroup) -> LayoutDimension:
@@ -96,6 +92,12 @@ class Vertical(Layout):
             return False
         self.biased_map = candidate
         return True
+
+    def bias_slot(self, all_windows: WindowList, idx: int, fractional_bias: float, cell_increment_bias_h: float, cell_increment_bias_v: float) -> bool:
+        before_layout = tuple(self.variable_layout(all_windows, self.biased_map))
+        self.biased_map[idx] = cell_increment_bias_h if self.main_is_horizontal else cell_increment_bias_v
+        after_layout = tuple(self.variable_layout(all_windows, self.biased_map))
+        return before_layout == after_layout
 
     def generate_layout_data(self, all_windows: WindowList) -> Generator[Tuple[WindowGroup, LayoutData, LayoutData], None, None]:
         ylayout = self.variable_layout(all_windows, self.biased_map)
@@ -124,8 +126,12 @@ class Vertical(Layout):
         assert wg is not None
         groups = tuple(all_windows.iter_all_layoutable_groups())
         idx = groups.index(wg)
-        before = [] if wg is groups[0] else [groups[idx-1].id]
-        after = [] if wg is groups[-1] else [groups[idx+1].id]
+        lg = len(groups)
+        if lg > 1:
+            before = [groups[(idx - 1 + lg) % lg].id]
+            after = [groups[(idx + 1) % lg].id]
+        else:
+            before, after = [], []
         if self.main_is_horizontal:
             return {'left': before, 'right': after, 'top': [], 'bottom': []}
         return {'top': before, 'bottom': after, 'left': [], 'right': []}

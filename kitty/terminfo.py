@@ -1,13 +1,12 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import re
 from binascii import hexlify, unhexlify
-from typing import TYPE_CHECKING, Dict, Generator, Optional, cast
+from collections.abc import Generator
+from typing import Optional, cast
 
-if TYPE_CHECKING:
-    from .options_stub import Options
+from kitty.options.types import Options
 
 
 def modify_key_bytes(keybytes: bytes, amt: int) -> bytes:
@@ -19,14 +18,14 @@ def modify_key_bytes(keybytes: bytes, amt: int) -> bytes:
         return bytes(ans[:-1] + bytearray(b';' + samt + b'~'))
     if ans[1] == ord('O'):
         return bytes(ans[:1] + bytearray(b'[1;' + samt) + ans[-1:])
-    raise ValueError('Unknown key type in key: {!r}'.format(keybytes))
+    raise ValueError(f'Unknown key type in key: {keybytes!r}')
 
 
 def encode_keystring(keybytes: bytes) -> str:
     return keybytes.decode('ascii').replace('\033', r'\E')
 
 
-names = 'xterm-kitty', 'KovIdTTY'
+names = Options.term, 'KovIdTTY'
 
 termcap_aliases = {
     'TN': 'name'
@@ -54,13 +53,14 @@ bool_capabilities = {
     # Terminfo extension used by tmux to detect true color support (non-standard)
     'Tc',
     # Indicates support for styled and colored underlines (non-standard) as
-    # described at:
-    # https://github.com/kovidgoyal/kitty/blob/master/protocol-extensions.asciidoc
+    # described at: https://sw.kovidgoyal.net/kitty/underlines/
     'Su',
     # Indicates support for full keyboard mode (non-standard) as
     # described at:
     # https://github.com/kovidgoyal/kitty/blob/master/protocol-extensions.asciidoc
     'fullkbd',
+    # Terminal supports focus events: https://lists.gnu.org/archive/html/bug-ncurses/2023-10/msg00117.html
+    'XF',
 
     # The following are entries that we don't use
     # # background color erase
@@ -112,8 +112,12 @@ string_capabilities = {
     'civis': r'\E[?25l',
     # Clear screen
     'clear': r'\E[H\E[2J',
+    # Clear scrollback. This is disabled because the clear program on Linux by default, not as
+    # an option, uses it and nukes the scrollback. What's more this behavior was silently changed
+    # around 2013. Given clear is maintained as part of ncurses this kind of crap is no surprise.
+    # 'E3': r'\E[3J',
     # Make cursor appear normal
-    'cnorm': r'\E[?12l\E[?25h',
+    'cnorm': r'\E[?12h\E[?25h',
     # Carriage return
     'cr': r'^M',  # CR (carriage return \r)
     # Change scroll region
@@ -178,7 +182,14 @@ string_capabilities = {
     'kbs': r'\177',
     # Mouse event has occurred
     'kmous': r'\E[M',
+
+    # These break mouse events in htop so they are disabled
+    # Turn on mouse reporting
+    # 'XM': '\E[?1006;1004;1000%?%p1%{1}%=%th%el%;',
+    # Expected format for mouse reporting escape codes
+    # 'xm': r'\E[<%i%p3%d;%p1%d;%p2%d;%?%p4%tM%em%;',
     # Scroll backwards (reverse index)
+
     'kri': r'\E[1;2A',
     # scroll forwards (index)
     'kind': r'\E[1;2B',
@@ -231,8 +242,10 @@ string_capabilities = {
     'smso': r'\E[7m',
     # Enter underline mode
     'smul': r'\E[4m',
+    'Smulx': r'\E[4:%p1%dm',  # this is a non-standard extension that some terminals use, so match them
     # Enter strikethrough mode
     'smxx': r'\E[9m',
+    'Sync': r'\EP=%p1%ds\E\\',  # this is a non-standard extension supported by tmux for synchronized updates
     # Clear all tab stops
     'tbc': r'\E[3g',
     # To status line (used to set window titles)
@@ -240,7 +253,7 @@ string_capabilities = {
     # From status line (end window title string)
     'fsl': r'^G',
     # Disable status line (clear window title)
-    'dsl': r'\E]2;\007',
+    'dsl': r'\E]2;\E\\',
     # Move to specified line
     'vpa': r'\E[%i%p1%dd',
     # Enter italics mode
@@ -261,6 +274,19 @@ string_capabilities = {
     'setrgbf': r'\E[38:2:%p1%d:%p2%d:%p3%dm',
     # Set RGB background color (non-standard used by neovim)
     'setrgbb': r'\E[48:2:%p1%d:%p2%d:%p3%dm',
+    # DECSCUSR Set cursor style
+    'Ss': r'\E[%p1%d\sq',
+    # DECSCUSR Reset cursor style to power-on default
+    'Se': r'\E[2\sq',
+    # Set cursor color
+    'Cs': r'\E]12;%p1%s\007',
+    # Reset cursor color
+    'Cr': r'\E]112\007',
+    # Indicates support for styled and colored underlines (non-standard) as
+    # described at: https://sw.kovidgoyal.net/kitty/underlines/
+    # 'Setulc' is equivalent to the 'Su' boolean capability. Until
+    # standardized, specify both for application compatibility.
+    'Setulc': r'\E[58:2:%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m',
 
     # The following entries are for compatibility with xterm,
     # and shell scripts using e.g. `tput u7` to emit a CPR escape
@@ -270,6 +296,26 @@ string_capabilities = {
     'u7': r'\E[6n',
     'u8': r'\E[?%[;0123456789]c',
     'u9': r'\E[c',
+
+    # Bracketed paste, added to ncurses 6.4 in 2023
+    'PS': r'\E[200~',
+    'PE': r'\E[201~',
+    'BE': r'\E[?2004h',
+    'BD': r'\E[?2004l',
+
+    # XTVERSION
+    'XR': r'\E[>0q',
+    # OSC 52 clipboard access
+    'Ms': r'\E]52;%p1%s;%p2%s\E\\',
+    # Send device attributes (report version)
+    'RV': r'\E[>c',
+    # Focus In and Out events
+    'kxIN': r'\E[I',
+    'kxOUT': r'\E[O',
+    # Enable/disable focus reporting
+    # Add to ncurses in: https://lists.gnu.org/archive/html/bug-ncurses/2023-10/msg00117.html
+    'fe': r'\E[?1004h',
+    'fd': r'\E[?1004l',
 
     # The following are entries that we don't use
     # # turn on blank mode, (characters invisible)
@@ -283,11 +329,18 @@ string_capabilities = {
 }
 
 string_capabilities.update({
-    'kf{}'.format(offset + n):
-        encode_keystring(modify_key_bytes(b'\033' + value, mod))
-    for offset, mod in {0: 0, 12: 2, 24: 5, 36: 6, 48: 3, 60: 4}.items()
+    f'kf{n}':
+        encode_keystring(modify_key_bytes(b'\033' + value, 0))
     for n, value in zip(range(1, 13),
                         b'OP OQ OR OS [15~ [17~ [18~ [19~ [20~ [21~ [23~ [24~'.split())
+})
+
+string_capabilities.update({
+    f'kf{offset + n}':
+        encode_keystring(modify_key_bytes(b'\033' + value, mod))
+    for offset, mod in {12: 2, 24: 5, 36: 6, 48: 3, 60: 4}.items()
+    for n, value in zip(range(1, 13),
+                        b'OP OQ [13~ OS [15~ [17~ [18~ [19~ [20~ [21~ [23~ [24~'.split())
     if offset + n < 64
 })
 
@@ -295,9 +348,9 @@ string_capabilities.update({
     name.format(unmod=unmod, key=key):
         encode_keystring(modify_key_bytes(b'\033' + value, mod))
     for unmod, key, value in zip(
-        'cuu1 cud1 cuf1 cub1 end home ich1 dch1 pp  np'.split(),
-        'UP   DN   RIT  LFT  END HOM  IC   DC   PRV NXT'.split(),
-        b'OA  OB   OC   OD   OF  OH   [2~  [3~  [5~ [6~'.split())
+        'cuu1 cud1 cuf1 cub1 beg end home ich1 dch1 pp  np'.split(),
+        'UP   DN   RIT  LFT  BEG END HOM  IC   DC   PRV NXT'.split(),
+        b'OA  OB   OC   OD   OE  OF  OH   [2~  [3~  [5~ [6~'.split())
     for name, mod in {
         'k{unmod}': 0, 'k{key}': 2, 'k{key}3': 3, 'k{key}4': 4,
         'k{key}5': 5, 'k{key}6': 6, 'k{key}7': 7}.items()
@@ -425,23 +478,23 @@ termcap_aliases.update({
 })
 
 termcap_aliases.update({
-    tc: 'kf{}'.format(n)
+    tc: f'kf{n}'
     for n, tc in enumerate(
         'k1 k2 k3 k4 k5 k6 k7 k8 k9 k; F1 F2 F3 F4 F5 F6 F7 F8 F9 FA '
         'FB FC FD FE FF FG FH FI FJ FK FL FM FN FO FP FQ FR FS FT FU '
         'FV FW FX FY FZ Fa Fb Fc Fd Fe Ff Fg Fh Fi Fj Fk Fl Fm Fn Fo '
         'Fp Fq Fr'.split(), 1)})
 
-queryable_capabilities = cast(Dict[str, str], numeric_capabilities.copy())
+queryable_capabilities = cast(dict[str, str], numeric_capabilities.copy())
 queryable_capabilities.update(string_capabilities)
 extra = (bool_capabilities | numeric_capabilities.keys() | string_capabilities.keys()) - set(termcap_aliases.values())
 no_termcap_for = frozenset(
-    'Su Tc setrgbf setrgbb fullkbd kUP kDN'.split() + [
-        'k{}{}'.format(key, mod)
-        for key in 'UP DN RIT LFT END HOM IC DC PRV NXT'.split()
+    'XR XM xm Ms RV kxIN kxOUT Cr Cs Se Ss Setulc Su Smulx Sync Tc PS PE BE BD setrgbf setrgbb fullkbd kUP kDN kbeg kBEG fe fd XF'.split() + [
+        f'k{key}{mod}'
+        for key in 'UP DN RIT LFT BEG END HOM IC DC PRV NXT'.split()
         for mod in range(3, 8)])
 if extra - no_termcap_for:
-    raise Exception('Termcap aliases not complete, missing: {}'.format(extra - no_termcap_for))
+    raise Exception(f'Termcap aliases not complete, missing: {extra - no_termcap_for}')
 del extra
 
 
@@ -449,8 +502,8 @@ def generate_terminfo() -> str:
     # Use ./build-terminfo to update definition files
     ans = ['|'.join(names)]
     ans.extend(sorted(bool_capabilities))
-    ans.extend('{}#{}'.format(k, numeric_capabilities[k]) for k in sorted(numeric_capabilities))
-    ans.extend('{}={}'.format(k, string_capabilities[k]) for k in sorted(string_capabilities))
+    ans.extend(f'{k}#{numeric_capabilities[k]}' for k in sorted(numeric_capabilities))
+    ans.extend(f'{k}={string_capabilities[k]}' for k in sorted(string_capabilities))
     return ',\n\t'.join(ans) + ',\n'
 
 
@@ -465,31 +518,33 @@ def key_as_bytes(name: str) -> bytes:
     return ans.encode('ascii')
 
 
-def get_capabilities(query_string: str, opts: 'Options') -> Generator[str, None, None]:
+def get_capabilities(query_string: str, opts: 'Options', window_id: int = 0, os_window_id: int = 0) -> Generator[str, None, None]:
     from .fast_data_types import ERROR_PREFIX
 
     def result(encoded_query_name: str, x: Optional[str] = None) -> str:
-        if x is None:
-            return '0+r' + encoded_query_name
-        return '1+r' + encoded_query_name + '=' + hexlify(str(x).encode('utf-8')).decode('ascii')
+        if not x:
+            valid = 0 if x is None else 1
+            return f'{valid}+r{encoded_query_name}'
+        return f'1+r{encoded_query_name}={hexlify(str(x).encode("utf-8")).decode("ascii")}'
 
     for encoded_query_name in query_string.split(';'):
         name = qname = unhexlify(encoded_query_name).decode('utf-8')
         if name in ('TN', 'name'):
             yield result(encoded_query_name, names[0])
         elif name.startswith('kitty-query-'):
+            from kittens.query_terminal.main import get_result
             name = name[len('kitty-query-'):]
-            if name == 'version':
-                from .constants import str_version
-                yield result(encoded_query_name, str_version)
-            elif name == 'allow_hyperlinks':
-                yield result(encoded_query_name,
-                             'ask' if opts.allow_hyperlinks == 0b11 else ('yes' if opts.allow_hyperlinks else 'no'))
-            else:
+            rval = get_result(name, window_id, os_window_id)
+            if rval is None:
                 from .utils import log_error
                 log_error('Unknown kitty terminfo query:', name)
                 yield result(encoded_query_name)
+            else:
+                yield result(encoded_query_name, rval)
         else:
+            if name in bool_capabilities:
+                yield result(encoded_query_name, '')
+                continue
             try:
                 val = queryable_capabilities[name]
             except KeyError:

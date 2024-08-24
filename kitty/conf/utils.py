@@ -1,27 +1,51 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
 import re
-import shlex
+import sys
+from contextlib import contextmanager
 from typing import (
-    Any, Callable, Dict, FrozenSet, Generator, Iterable, Iterator, List,
-    NamedTuple, Optional, Sequence, Tuple, Type, TypeVar, Union, Set
+    Any,
+    Callable,
+    Dict,
+    Generator,
+    Generic,
+    Iterable,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
 )
 
-from ..rgb import Color, to_color as as_color
-from ..types import ParsedShortcut, ConvertibleToNumbers
-from ..utils import expandvars, log_error
+from ..constants import _plat, is_macos
+from ..fast_data_types import Color
+from ..rgb import to_color as as_color
+from ..types import ConvertibleToNumbers, ParsedShortcut, run_once
+from ..typing import Protocol
+from ..utils import expandvars, log_error, shlex_split
 
 key_pat = re.compile(r'([a-zA-Z][a-zA-Z0-9_-]*)\s+(.+)$')
+ItemParser = Callable[[str, str, Dict[str, Any]], bool]
 T = TypeVar('T')
+
+
+class OptionsProtocol(Protocol):
+
+    def _asdict(self) -> Dict[str, Any]:
+        pass
 
 
 class BadLine(NamedTuple):
     number: int
     line: str
     exception: Exception
+    file: str
 
 
 def positive_int(x: ConvertibleToNumbers) -> int:
@@ -30,6 +54,10 @@ def positive_int(x: ConvertibleToNumbers) -> int:
 
 def positive_float(x: ConvertibleToNumbers) -> float:
     return max(0, float(x))
+
+
+def percent(x: str) -> float:
+    return float(x.rstrip('%')) / 100.
 
 
 def to_color(x: str) -> Color:
@@ -62,34 +90,39 @@ class ToCmdline:
     def __exit__(self, *a: Any) -> None:
         self.override_env = None
 
-    def filter_env_vars(self, *a: str) -> 'ToCmdline':
+    def filter_env_vars(self, *a: str, **override: str) -> 'ToCmdline':
         remove = frozenset(a)
         self.override_env = {k: v for k, v in os.environ.items() if k not in remove}
+        self.override_env.update(override)
         return self
 
-    def __call__(self, x: str) -> List[str]:
-        return list(
-            map(
-                lambda y: expandvars(
-                    os.path.expanduser(y),
-                    os.environ if self.override_env is None else self.override_env,
-                    fallback_to_os_env=False
-                ),
-                shlex.split(x)
+    def __call__(self, x: str, expand: bool = True) -> List[str]:
+        if expand:
+            ans = list(
+                map(
+                    lambda y: expandvars(
+                        os.path.expanduser(y),
+                        os.environ if self.override_env is None else self.override_env,
+                        fallback_to_os_env=False
+                    ),
+                    shlex_split(x)
+                )
             )
-        )
+        else:
+            ans = list(shlex_split(x))
+        return ans
 
 
 to_cmdline_implementation = ToCmdline()
 
 
-def to_cmdline(x: str) -> List[str]:
-    return to_cmdline_implementation(x)
+def to_cmdline(x: str, expand: bool = True) -> List[str]:
+    return to_cmdline_implementation(x, expand)
 
 
 def python_string(text: str) -> str:
-    import ast
-    ans: str = ast.literal_eval("'''" + text.replace("'''", "'\\''") + "'''")
+    from ast import literal_eval
+    ans: str = literal_eval("'''" + text.replace("'''", "'\\''") + "'''")
     return ans
 
 
@@ -102,7 +135,7 @@ class Choice:
     def __call__(self, x: str) -> str:
         x = x.lower()
         if x not in self.all_choices:
-            x = self.defval
+            raise ValueError(f'The value {x} is not a known choice')
         return x
 
 
@@ -110,249 +143,321 @@ def choices(*choices: str) -> Choice:
     return Choice(choices)
 
 
-def create_type_converter(all_options: Dict) -> Callable[[str, Any], Any]:
-    from .definition import Option
+class CurrentlyParsing:
+    __slots__ = 'line', 'number', 'file'
 
-    def type_convert(name: str, val: Any) -> Any:
-        o = all_options.get(name)
-        if isinstance(o, Option):
-            val = o.option_type(val)
-        return val
-    return type_convert
+    def __init__(self, line: str = '', number: int = -1, file: str = ''):
+        self.line = line
+        self.number = number
+        self.file = file
+
+    def __copy__(self) -> 'CurrentlyParsing':
+        return CurrentlyParsing(self.line, self.number, self.file)
+
+    @contextmanager
+    def set_line(self, line: str, number: int) -> Iterator['CurrentlyParsing']:
+        orig = self.line, self.number
+        self.line = line
+        self.number = number
+        try:
+            yield self
+        finally:
+            self.line, self.number = orig
+
+    @contextmanager
+    def set_file(self, file: str) -> Iterator['CurrentlyParsing']:
+        orig = self.file
+        self.file = file
+        try:
+            yield self
+        finally:
+            self.file = orig
+
+
+currently_parsing = CurrentlyParsing()
+
+
+@run_once
+def os_name() -> str:
+    if is_macos:
+        return 'macos'
+    if 'bsd' in _plat:
+        return 'bsd'
+    if 'linux' in _plat:
+        return 'linux'
+    return 'unknown'
+
+
+class NamedLineIterator:
+
+    def __init__(self, name: str, lines: Iterator[str]):
+        self.lines = lines
+        self.name = name
+
+    def __iter__(self) -> Iterator[str]:
+        return self.lines
 
 
 def parse_line(
     line: str,
-    type_convert: Callable[[str, Any], Any],
-    special_handling: Callable,
-    ans: Dict[str, Any], all_keys: Optional[FrozenSet[str]],
-    base_path_for_includes: str
+    parse_conf_item: ItemParser,
+    ans: Dict[str, Any],
+    base_path_for_includes: str,
+    accumulate_bad_lines: Optional[List[BadLine]] = None
 ) -> None:
     line = line.strip()
     if not line or line.startswith('#'):
         return
     m = key_pat.match(line)
     if m is None:
-        log_error('Ignoring invalid config line: {}'.format(line))
+        log_error(f'Ignoring invalid config line: {line!r}')
         return
     key, val = m.groups()
-    if special_handling(key, val, ans):
+    if key in ('include', 'globinclude', 'envinclude'):
+        val = expandvars(os.path.expanduser(val.strip()), {'KITTY_OS': os_name()})
+        if key == 'globinclude':
+            from pathlib import Path
+            vals = tuple(map(lambda x: str(os.fspath(x)), sorted(Path(base_path_for_includes).glob(val))))
+        elif key == 'envinclude':
+            from fnmatch import fnmatchcase
+            for x in os.environ:
+                if fnmatchcase(x, val):
+                    with currently_parsing.set_file(f'<env var: {x}>'):
+                        _parse(
+                            NamedLineIterator(os.path.join(base_path_for_includes, ''), iter(os.environ[x].splitlines())),
+                            parse_conf_item,
+                            ans,
+                            accumulate_bad_lines
+                        )
+            return
+        else:
+            if not os.path.isabs(val):
+                val = os.path.join(base_path_for_includes, val)
+            vals = (val,)
+        for val in vals:
+            try:
+                with open(val, encoding='utf-8', errors='replace') as include:
+                    with currently_parsing.set_file(val):
+                        _parse(include, parse_conf_item, ans, accumulate_bad_lines)
+            except FileNotFoundError:
+                log_error(
+                    'Could not find included config file: {}, ignoring'.
+                    format(val)
+                )
+            except OSError:
+                log_error(
+                    'Could not read from included config file: {}, ignoring'.
+                    format(val)
+                )
         return
-    if key == 'include':
-        val = os.path.expandvars(os.path.expanduser(val.strip()))
-        if not os.path.isabs(val):
-            val = os.path.join(base_path_for_includes, val)
-        try:
-            with open(val, encoding='utf-8', errors='replace') as include:
-                _parse(include, type_convert, special_handling, ans, all_keys)
-        except FileNotFoundError:
-            log_error(
-                'Could not find included config file: {}, ignoring'.
-                format(val)
-            )
-        except OSError:
-            log_error(
-                'Could not read from included config file: {}, ignoring'.
-                format(val)
-            )
-        return
-    if all_keys is not None and key not in all_keys:
-        log_error('Ignoring unknown config key: {}'.format(key))
-        return
-    ans[key] = type_convert(key, val)
+    if not parse_conf_item(key, val, ans):
+        log_error(f'Ignoring unknown config key: {key}')
 
 
 def _parse(
     lines: Iterable[str],
-    type_convert: Callable[[str, Any], Any],
-    special_handling: Callable,
+    parse_conf_item: ItemParser,
     ans: Dict[str, Any],
-    all_keys: Optional[FrozenSet[str]],
     accumulate_bad_lines: Optional[List[BadLine]] = None
 ) -> None:
     name = getattr(lines, 'name', None)
     if name:
-        base_path_for_includes = os.path.dirname(os.path.abspath(name))
+        base_path_for_includes = os.path.abspath(name) if name.endswith(os.path.sep) else os.path.dirname(os.path.abspath(name))
     else:
         from ..constants import config_dir
         base_path_for_includes = config_dir
-    for i, line in enumerate(lines):
+
+    it = iter(lines)
+    line = ''
+    next_line: str = ''
+    next_line_num = 0
+
+    while True:
         try:
-            parse_line(
-                line, type_convert, special_handling, ans, all_keys,
-                base_path_for_includes
-            )
-        except Exception as e:
-            if accumulate_bad_lines is None:
-                raise
-            accumulate_bad_lines.append(BadLine(i + 1, line.rstrip(), e))
+            if next_line:
+                line = next_line
+            else:
+                line = next(it).lstrip()
+                next_line_num += 1
+            line_num = next_line_num
+
+            try:
+                next_line = next(it).lstrip()
+                next_line_num += 1
+
+                while next_line.startswith('\\'):
+                    line = line.rstrip('\n') + next_line[1:]
+                    try:
+                        next_line = next(it).lstrip()
+                        next_line_num += 1
+                    except StopIteration:
+                        next_line = ''
+                        break
+            except StopIteration:
+                next_line = ''
+            try:
+                with currently_parsing.set_line(line, line_num):
+                    parse_line(line, parse_conf_item, ans, base_path_for_includes, accumulate_bad_lines)
+            except Exception as e:
+                if accumulate_bad_lines is None:
+                    raise
+                accumulate_bad_lines.append(BadLine(line_num, line.rstrip(), e, currently_parsing.file))
+        except StopIteration:
+            break
 
 
 def parse_config_base(
     lines: Iterable[str],
-    all_option_names: Optional[FrozenSet],
-    all_options: Dict[str, Any],
-    special_handling: Callable,
+    parse_conf_item: ItemParser,
     ans: Dict[str, Any],
     accumulate_bad_lines: Optional[List[BadLine]] = None
 ) -> None:
     _parse(
-        lines, create_type_converter(all_options), special_handling, ans, all_option_names, accumulate_bad_lines
+        lines, parse_conf_item, ans, accumulate_bad_lines
     )
 
 
-def create_options_class(all_keys: Iterable[str]) -> Type:
-    keys = tuple(sorted(all_keys))
-    slots = keys + ('_fields', )
-
-    def __init__(self: Any, kw: Dict[str, Any]) -> None:
-        for k, v in kw.items():
-            setattr(self, k, v)
-
-    def __iter__(self: Any) -> Iterator[str]:
-        return iter(keys)
-
-    def __len__(self: Any) -> int:
-        return len(keys)
-
-    def __getitem__(self: Any, i: Union[int, str]) -> Any:
-        if isinstance(i, int):
-            i = keys[i]
-        try:
-            return getattr(self, i)
-        except AttributeError:
-            raise KeyError('No option named: {}'.format(i))
-
-    def _asdict(self: Any) -> Dict[str, Any]:
-        return {k: getattr(self, k) for k in self._fields}
-
-    def _replace(self: Any, **kw: Dict) -> Any:
-        ans = self._asdict()
-        ans.update(kw)
-        return self.__class__(ans)
-
-    ans = type(
-        'Options', (), {
-            '__slots__': slots,
-            '__init__': __init__,
-            '_asdict': _asdict,
-            '_replace': _replace,
-            '__iter__': __iter__,
-            '__len__': __len__,
-            '__getitem__': __getitem__
-        }
-    )
-    ans._fields = keys  # type: ignore
-    return ans
-
-
-def merge_dicts(defaults: Dict, newvals: Dict) -> Dict:
+def merge_dicts(defaults: Dict[str, Any], newvals: Dict[str, Any]) -> Dict[str, Any]:
     ans = defaults.copy()
     ans.update(newvals)
     return ans
 
 
-def resolve_config(SYSTEM_CONF: str, defconf: str, config_files_on_cmd_line: Sequence[str]) -> Generator[str, None, None]:
+def resolve_config(SYSTEM_CONF: str, defconf: str, config_files_on_cmd_line: Sequence[str] = ()) -> Generator[str, None, None]:
     if config_files_on_cmd_line:
         if 'NONE' not in config_files_on_cmd_line:
             yield SYSTEM_CONF
-            for cf in config_files_on_cmd_line:
-                yield cf
+            yield from config_files_on_cmd_line
     else:
         yield SYSTEM_CONF
         yield defconf
 
 
 def load_config(
-        Options: Type[T],
-        defaults: Any,
-        parse_config: Callable[[Iterable[str]], Dict[str, Any]],
-        merge_configs: Callable[[Dict, Dict], Dict],
-        *paths: str,
-        overrides: Optional[Iterable[str]] = None
-) -> T:
-    ans: Dict = defaults._asdict()
+    defaults: OptionsProtocol,
+    parse_config: Callable[[Iterable[str]], Dict[str, Any]],
+    merge_configs: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+    *paths: str,
+    overrides: Optional[Iterable[str]] = None,
+    initialize_defaults: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda x: x,
+) -> Tuple[Dict[str, Any], Tuple[str, ...]]:
+    ans = initialize_defaults(defaults._asdict())
+    found_paths = []
     for path in paths:
         if not path:
             continue
-        try:
-            with open(path, encoding='utf-8', errors='replace') as f:
-                vals = parse_config(f)
-        except (FileNotFoundError, PermissionError):
-            continue
+        if path == '-':
+            path = '/dev/stdin'
+            with currently_parsing.set_file(path):
+                vals = parse_config(sys.stdin)
+        else:
+            try:
+                with open(path, encoding='utf-8', errors='replace') as f:
+                    with currently_parsing.set_file(path):
+                        vals = parse_config(f)
+            except (FileNotFoundError, PermissionError):
+                continue
+        found_paths.append(path)
         ans = merge_configs(ans, vals)
     if overrides is not None:
-        vals = parse_config(overrides)
+        with currently_parsing.set_file('<override>'):
+            vals = parse_config(overrides)
         ans = merge_configs(ans, vals)
-    return Options(ans)  # type: ignore
+    return ans, tuple(found_paths)
 
 
-def init_config(default_config_lines: Iterable[str], parse_config: Callable) -> Tuple[Type, Any]:
-    defaults = parse_config(default_config_lines, check_keys=False)
-    Options = create_options_class(defaults.keys())
-    defaults = Options(defaults)
-    return Options, defaults
+ReturnType = TypeVar('ReturnType')
+KeyFunc = Callable[[str, str], ReturnType]
 
 
-def key_func() -> Tuple[Callable[..., Callable], Dict[str, Callable]]:
-    ans: Dict[str, Callable] = {}
+class KeyFuncWrapper(Generic[ReturnType]):
+    def __init__(self) -> None:
+        self.args_funcs: Dict[str, KeyFunc[ReturnType]] = {}
 
-    def func_with_args(*names: str) -> Callable:
+    def __call__(self, *names: str) -> Callable[[KeyFunc[ReturnType]], KeyFunc[ReturnType]]:
 
-        def w(f: Callable) -> Callable:
+        def w(f: KeyFunc[ReturnType]) -> KeyFunc[ReturnType]:
             for name in names:
-                if ans.setdefault(name, f) is not f:
-                    raise ValueError(
-                        'the args_func {} is being redefined'.format(name)
-                    )
+                if self.args_funcs.setdefault(name, f) is not f:
+                    raise ValueError(f'the args_func {name} is being redefined')
             return f
-
         return w
 
-    return func_with_args, ans
+    def get(self, name: str) -> Optional[KeyFunc[ReturnType]]:
+        return self.args_funcs.get(name)
 
 
-KittensKeyAction = Tuple[str, Tuple[str, ...]]
+class KeyAction(NamedTuple):
+    func: str
+    args: Tuple[Union[str, float, bool, int, None], ...] = ()
+
+    def __repr__(self) -> str:
+        if self.args:
+            return f'KeyAction({self.func!r}, {self.args!r})'
+        return f'KeyAction({self.func!r})'
+
+    def pretty(self) -> str:
+        ans = self.func
+        for x in self.args:
+            ans += f' {x}'
+        return ans
 
 
-def parse_kittens_func_args(action: str, args_funcs: Dict[str, Callable]) -> KittensKeyAction:
+def parse_kittens_func_args(action: str, args_funcs: Dict[str, KeyFunc[Tuple[str, Any]]]) -> KeyAction:
     parts = action.strip().split(' ', 1)
     func = parts[0]
     if len(parts) == 1:
-        return func, ()
+        return KeyAction(func, ())
     rest = parts[1]
 
     try:
         parser = args_funcs[func]
     except KeyError as e:
         raise KeyError(
-            'Unknown action: {}. Check if map action: '
-            '{} is valid'.format(func, action)
+            f'Unknown action: {func}. Check if map action: {action} is valid'
         ) from e
 
     try:
         func, args = parser(func, rest)
     except Exception:
-        raise ValueError('Unknown key action: {}'.format(action))
+        raise ValueError(f'Unknown key action: {action}')
 
     if not isinstance(args, (list, tuple)):
         args = (args, )
 
-    return func, tuple(args)
+    return KeyAction(func, tuple(args))
+
+
+KittensKeyDefinition = Tuple[ParsedShortcut, KeyAction]
+KittensKeyMap = Dict[ParsedShortcut, KeyAction]
 
 
 def parse_kittens_key(
-    val: str, funcs_with_args: Dict[str, Callable]
-) -> Optional[Tuple[KittensKeyAction, ParsedShortcut]]:
+    val: str, funcs_with_args: Dict[str, KeyFunc[Tuple[str, Any]]]
+) -> Optional[KittensKeyDefinition]:
     from ..key_encoding import parse_shortcut
     sc, action = val.partition(' ')[::2]
     if not sc or not action:
         return None
     ans = parse_kittens_func_args(action, funcs_with_args)
-    return ans, parse_shortcut(sc)
+    return parse_shortcut(sc), ans
 
 
 def uniq(vals: Iterable[T]) -> List[T]:
     seen: Set[T] = set()
     seen_add = seen.add
     return [x for x in vals if x not in seen and not seen_add(x)]
+
+
+def save_type_stub(text: str, fpath: str) -> None:
+    fpath += 'i'
+    preamble = '# Update this file by running: ./test.py mypy\n\n'
+    try:
+        with open(fpath) as fs:
+            existing = fs.read()
+    except FileNotFoundError:
+        existing = ''
+    current = preamble + text
+    if existing != current:
+        with open(fpath, 'w') as f:
+            f.write(current)

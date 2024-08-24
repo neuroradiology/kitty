@@ -10,7 +10,7 @@
 #include <structmember.h>
 
 static PyObject *
-new(PyTypeObject *type, PyObject UNUSED *args, PyObject UNUSED *kwds) {
+new_cursor_object(PyTypeObject *type, PyObject UNUSED *args, PyObject UNUSED *kwds) {
     Cursor *self;
 
     self = (Cursor *)type->tp_alloc(type, 0);
@@ -24,10 +24,10 @@ dealloc(Cursor* self) {
 
 #define EQ(x) (a->x == b->x)
 static int __eq__(Cursor *a, Cursor *b) {
-    return EQ(bold) && EQ(italic) && EQ(strikethrough) && EQ(dim) && EQ(reverse) && EQ(decoration) && EQ(fg) && EQ(bg) && EQ(decoration_fg) && EQ(x) && EQ(y) && EQ(shape) && EQ(blink);
+    return EQ(bold) && EQ(italic) && EQ(strikethrough) && EQ(dim) && EQ(reverse) && EQ(decoration) && EQ(fg) && EQ(bg) && EQ(decoration_fg) && EQ(x) && EQ(y) && EQ(shape) && EQ(non_blinking);
 }
 
-static const char* cursor_names[NUM_OF_CURSOR_SHAPES] = { "NO_SHAPE", "BLOCK", "BEAM", "UNDERLINE" };
+static const char* cursor_names[NUM_OF_CURSOR_SHAPES] = { "NO_SHAPE", "BLOCK", "BEAM", "UNDERLINE", "HOLLOW" };
 
 #define BOOL(x) ((x) ? Py_True : Py_False)
 static PyObject *
@@ -35,7 +35,7 @@ repr(Cursor *self) {
     return PyUnicode_FromFormat(
         "Cursor(x=%u, y=%u, shape=%s, blink=%R, fg=#%08x, bg=#%08x, bold=%R, italic=%R, reverse=%R, strikethrough=%R, dim=%R, decoration=%d, decoration_fg=#%08x)",
         self->x, self->y, (self->shape < NUM_OF_CURSOR_SHAPES ? cursor_names[self->shape] : "INVALID"),
-        BOOL(self->blink), self->fg, self->bg, BOOL(self->bold), BOOL(self->italic), BOOL(self->reverse), BOOL(self->strikethrough), BOOL(self->dim), self->decoration, self->decoration_fg
+        BOOL(!self->non_blinking), self->fg, self->bg, BOOL(self->bold), BOOL(self->italic), BOOL(self->reverse), BOOL(self->strikethrough), BOOL(self->dim), self->decoration, self->decoration_fg
     );
 }
 
@@ -46,7 +46,7 @@ cursor_reset_display_attrs(Cursor *self) {
 }
 
 
-static inline void
+static void
 parse_color(int *params, unsigned int *i, unsigned int count, uint32_t *result) {
     unsigned int attr;
     uint8_t r, g, b;
@@ -57,10 +57,10 @@ parse_color(int *params, unsigned int *i, unsigned int count, uint32_t *result) 
                 if (*i < count) *result = (params[(*i)++] & 0xFF) << 8 | 1;
                 break;
             case 2: \
-                if (*i < count - 2) {
+                if (*i + 2 < count) {
                     /* Ignore the first parameter in a four parameter RGB */
                     /* sequence (unused color space id), see https://github.com/kovidgoyal/kitty/issues/227 */
-                    if (*i < count - 3) (*i)++;
+                    if (*i +3 < count) (*i)++;
                     r = params[(*i)++] & 0xFF;
                     g = params[(*i)++] & 0xFF;
                     b = params[(*i)++] & 0xFF;
@@ -73,7 +73,7 @@ parse_color(int *params, unsigned int *i, unsigned int count, uint32_t *result) 
 
 
 void
-cursor_from_sgr(Cursor *self, int *params, unsigned int count) {
+cursor_from_sgr(Cursor *self, int *params, unsigned int count, bool is_group) {
 #define SET_COLOR(which) { parse_color(params, &i, count, &self->which); } break;
 START_ALLOW_CASE_RANGE
     unsigned int i = 0, attr;
@@ -90,7 +90,7 @@ START_ALLOW_CASE_RANGE
             case 3:
                 self->italic = true;  break;
             case 4:
-                if (i < count) { self->decoration = MIN(3, params[i]); i++; }
+                if (is_group && i < count) { self->decoration = MIN(5, params[i]); i++; }
                 else self->decoration = 1;
                 break;
             case 7:
@@ -99,6 +99,10 @@ START_ALLOW_CASE_RANGE
                 self->strikethrough = true;  break;
             case 21:
                 self->decoration = 2; break;
+            case 221:
+                self->bold = false; break;
+            case 222:
+                self->dim = false; break;
             case 22:
                 self->bold = false;  self->dim = false; break;
             case 23:
@@ -130,20 +134,18 @@ START_ALLOW_CASE_RANGE
             case DECORATION_FG_CODE + 1:
                 self->decoration_fg = 0; break;
         }
+        if (is_group) break;
     }
 #undef SET_COLOR
 END_ALLOW_CASE_RANGE
 }
 
 void
-apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, int *params, unsigned int count) {
+apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, int *params, unsigned int count, bool is_group) {
 #define RANGE for(unsigned c = 0; c < cell_count; c++, cell++)
-#define SET(shift) RANGE { cell->attrs |= (1 << shift); } break;
-#define RESET(shift) RANGE { cell->attrs &= ~(1 << shift); } break;
-#define RESET2(shift1, shift2) RANGE { cell->attrs &= ~((1 << shift1) | (1 << shift2)); } break;
-#define SETM(val, mask, shift) { RANGE { cell->attrs &= ~(mask << shift); cell->attrs |= ((val) << shift); } break; }
 #define SET_COLOR(which) { color_type color = 0; parse_color(params, &i, count, &color); if (color) { RANGE { cell->which = color; }} } break;
 #define SIMPLE(which, val) RANGE { cell->which = (val); } break;
+#define S(which, val) RANGE { cell->attrs.which = (val); } break;
 
     unsigned int i = 0, attr;
     if (!count) { params[0] = 0; count = 1; }
@@ -151,34 +153,42 @@ apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, int *params, un
         GPUCell *cell = first_cell;
         attr = params[i++];
         switch(attr) {
-            case 0:
-                RANGE { cell->attrs &= WIDTH_MASK; cell->fg = 0; cell->bg = 0; cell->decoration_fg = 0; }
+            case 0: {
+                const CellAttrs remove_sgr_mask = {.val=~SGR_MASK};
+                RANGE { cell->attrs.val &= remove_sgr_mask.val; cell->fg = 0; cell->bg = 0; cell->decoration_fg = 0; }
+            }
                 break;
             case 1:
-                SET(BOLD_SHIFT);
+                S(bold, true);
             case 2:
-                SET(DIM_SHIFT);
+                S(dim, true);
             case 3:
-                SET(ITALIC_SHIFT);
-            case 4:
-                if (i < count) { uint8_t val = MIN(3, params[i]); i++; SETM(val, DECORATION_MASK, DECORATION_SHIFT); }
-                else { SETM(1, DECORATION_MASK, DECORATION_SHIFT); }
+                S(italic, true);
+            case 4: {
+                uint8_t val = 1;
+                if (is_group && i < count) { val = MIN(5, params[i]); i++; }
+                S(decoration, val);
+            }
             case 7:
-                SET(REVERSE_SHIFT);
+                S(reverse, true);
             case 9:
-                SET(STRIKE_SHIFT);
+                S(strike, true);
             case 21:
-                SETM(2, DECORATION_MASK, DECORATION_SHIFT);
+                S(decoration, 2);
+            case 221:
+                S(bold, false);
+            case 222:
+                S(dim, false);
             case 22:
-                RESET2(DIM_SHIFT, BOLD_SHIFT);
+                RANGE { cell->attrs.bold = false; cell->attrs.dim = false; } break;
             case 23:
-                RESET(ITALIC_SHIFT);
+                S(italic, false);
             case 24:
-                SETM(0, DECORATION_MASK, DECORATION_SHIFT);
+                S(decoration, 0);
             case 27:
-                RESET(REVERSE_SHIFT);
+                S(reverse, false);
             case 29:
-                RESET(STRIKE_SHIFT);
+                S(strike, false);
 START_ALLOW_CASE_RANGE
             case 30 ... 37:
                 SIMPLE(fg, ((attr - 30) << 8) | 1);
@@ -202,19 +212,18 @@ END_ALLOW_CASE_RANGE
             case DECORATION_FG_CODE + 1:
                 SIMPLE(decoration_fg, 0);
         }
+        if (is_group) break;
     }
-#undef RESET
-#undef RESET2
 #undef SET_COLOR
-#undef SET
-#undef SETM
 #undef RANGE
+#undef SIMPLE
+#undef S
 }
 
 const char*
 cursor_as_sgr(const Cursor *self) {
     GPUCell blank_cell = { 0 }, cursor_cell = {
-        .attrs = CURSOR_TO_ATTRS(self, 1),
+        .attrs = cursor_to_attrs(self, 1),
         .fg = self->fg & COL_MASK,
         .bg = self->bg & COL_MASK,
         .decoration_fg = self->decoration_fg & COL_MASK,
@@ -232,12 +241,12 @@ reset_display_attrs(Cursor *self, PyObject *a UNUSED) {
 void cursor_reset(Cursor *self) {
     cursor_reset_display_attrs(self);
     self->x = 0; self->y = 0;
-    self->shape = NO_CURSOR_SHAPE; self->blink = false;
+    self->shape = NO_CURSOR_SHAPE; self->non_blinking = false;
 }
 
 void cursor_copy_to(Cursor *src, Cursor *dest) {
 #define CCY(x) dest->x = src->x;
-    CCY(x); CCY(y); CCY(shape); CCY(blink);
+    CCY(x); CCY(y); CCY(shape); CCY(non_blinking);
     CCY(bold); CCY(italic); CCY(strikethrough); CCY(dim); CCY(reverse); CCY(decoration); CCY(fg); CCY(bg); CCY(decoration_fg);
 }
 
@@ -252,7 +261,11 @@ BOOL_GETSET(Cursor, italic)
 BOOL_GETSET(Cursor, reverse)
 BOOL_GETSET(Cursor, strikethrough)
 BOOL_GETSET(Cursor, dim)
-BOOL_GETSET(Cursor, blink)
+
+static PyObject* blink_get(Cursor *self, void UNUSED *closure) { PyObject *ans = !self->non_blinking ? Py_True : Py_False; Py_INCREF(ans); return ans; }
+
+static int blink_set(Cursor *self, PyObject *value, void UNUSED *closure) { if (value == NULL) { PyErr_SetString(PyExc_TypeError, "Cannot delete attribute"); return -1; } self->non_blinking = PyObject_IsTrue(value) ? false : true; return 0; }
+
 
 static PyMemberDef members[] = {
     {"x", T_UINT, offsetof(Cursor, x), 0, "x"},
@@ -297,7 +310,7 @@ PyTypeObject Cursor_Type = {
     .tp_methods = methods,
     .tp_members = members,
     .tp_getset = getseters,
-    .tp_new = new,
+    .tp_new = new_cursor_object,
 };
 
 RICHCMP(Cursor)
@@ -318,8 +331,8 @@ copy(Cursor *self, PyObject *a UNUSED) {
     return (PyObject*)cursor_copy(self);
 }
 
-Cursor *alloc_cursor() {
-    return (Cursor*)new(&Cursor_Type, NULL, NULL);
+Cursor *alloc_cursor(void) {
+    return (Cursor*)new_cursor_object(&Cursor_Type, NULL, NULL);
 }
 
 INIT_TYPE(Cursor)

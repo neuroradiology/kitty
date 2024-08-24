@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
@@ -241,7 +240,7 @@ def stat_at(file: str, cwd: Optional[Union[int, str]] = None, follow_symlinks: b
     dirfd: Optional[int] = None
     need_to_close = False
     if isinstance(cwd, str):
-        dirfd = os.open(cwd, os.O_RDONLY)
+        dirfd = os.open(cwd, os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0))
         need_to_close = True
     elif isinstance(cwd, int):
         dirfd = cwd
@@ -332,15 +331,15 @@ class Dircolors:
                 # change .xyz to *.xyz
                 yield '*' + pair[0], pair[1]
 
-        return ':'.join('%s=%s' % pair for pair in gen_pairs())
+        return ':'.join('{}={}'.format(*pair) for pair in gen_pairs())
 
     def _format_code(self, text: str, code: str) -> str:
         val = self.codes.get(code)
-        return '\033[%sm%s\033[%sm' % (val, text, self.codes.get('rs', '0')) if val else text
+        return '\033[{}m{}\033[{}m'.format(val, text, self.codes.get('rs', '0')) if val else text
 
     def _format_ext(self, text: str, ext: str) -> str:
         val = self.extensions.get(ext, '0')
-        return '\033[%sm%s\033[%sm' % (val, text, self.codes.get('rs', '0')) if val else text
+        return '\033[{}m{}\033[{}m'.format(val, text, self.codes.get('rs', '0')) if val else text
 
     def format_mode(self, text: str, sr: os.stat_result) -> str:
         mode = sr.st_mode

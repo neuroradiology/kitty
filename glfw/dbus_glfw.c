@@ -31,14 +31,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-static inline void
+static void
 report_error(DBusError *err, const char *fmt, ...) {
-    static char buf[1024];
+    static char buf[4096];
     va_list args;
     va_start(args, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    snprintf(buf + n, sizeof(buf), ". DBUS error: %s", err->message);
+    if (n >= 0 && (size_t)n < (sizeof(buf) - 256)) snprintf(buf + n, sizeof(buf) - n, ". DBUS error: %s", err->message ? err->message : "(null)");
     _glfwInputError(GLFW_PLATFORM_ERROR, "%s", buf);
     dbus_error_free(err);
 }
@@ -64,7 +64,7 @@ on_dbus_watch_ready(int fd UNUSED, int events, void *data) {
     dbus_watch_handle(watch, flags);
 }
 
-static inline int
+static int
 events_for_watch(DBusWatch *watch) {
     int events = 0;
     unsigned int flags = dbus_watch_get_flags(watch);
@@ -174,7 +174,7 @@ glfw_dbus_dispatch(DBusConnection *conn) {
 }
 
 void
-glfw_dbus_session_bus_dispatch() {
+glfw_dbus_session_bus_dispatch(void) {
     if (session_bus) glfw_dbus_dispatch(session_bus);
 }
 
@@ -224,13 +224,12 @@ format_message_error(DBusError *err) {
 static void
 method_reply_received(DBusPendingCall *pending, void *user_data) {
     MethodResponse *res = (MethodResponse*)user_data;
-    DBusMessage *msg = dbus_pending_call_steal_reply(pending);
+    RAII_MSG(msg, dbus_pending_call_steal_reply(pending));
     if (msg) {
         DBusError err;
         dbus_error_init(&err);
         if (dbus_set_error_from_message(&err, msg)) res->callback(NULL, format_message_error(&err), res->user_data);
         else res->callback(msg, NULL, res->user_data);
-        dbus_message_unref(msg);
     }
 }
 
@@ -263,8 +262,8 @@ call_method_with_msg(DBusConnection *conn, DBusMessage *msg, int timeout, dbus_p
 
 static bool
 call_method(DBusConnection *conn, const char *node, const char *path, const char *interface, const char *method, int timeout, dbus_pending_callback callback, void *user_data, va_list ap) {
-    if (!conn) return false;
-    DBusMessage *msg = dbus_message_new_method_call(node, path, interface, method);
+    if (!conn || !path) return false;
+    RAII_MSG(msg, dbus_message_new_method_call(node, path, interface, method));
     if (!msg) return false;
     bool retval = false;
 
@@ -274,7 +273,6 @@ call_method(DBusConnection *conn, const char *node, const char *path, const char
     } else {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Failed to call DBUS method: %s on node: %s and interface: %s could not add arguments", method, node, interface);
     }
-    dbus_message_unref(msg);
 
     return retval;
 }
@@ -344,7 +342,7 @@ glfw_dbus_connect_to_session_bus(void) {
 }
 
 DBusConnection *
-glfw_dbus_session_bus() {
+glfw_dbus_session_bus(void) {
     if (!session_bus) glfw_dbus_connect_to_session_bus();
     return session_bus;
 }

@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 from kitty.config import defaults
-from kitty.types import WindowGeometry
 from kitty.layout.interface import Grid, Horizontal, Splits, Stack, Tall
+from kitty.types import WindowGeometry
 from kitty.window import EdgeWidths
 from kitty.window_list import WindowList, reset_group_id_counter
 
@@ -32,8 +31,8 @@ class Window:
     def effective_padding(self, edge):
         return 1
 
-    def effective_margin(self, edge, is_single_window=False):
-        return 0 if is_single_window else 1
+    def effective_margin(self, edge):
+        return 1
 
     def set_visible_in_layout(self, val):
         self.is_visible_in_layout = bool(val)

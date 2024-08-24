@@ -1,10 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
-import subprocess
 import shutil
+import subprocess
 
 base = os.path.dirname(os.path.abspath(__file__))
 unframed_src = os.path.join(base, 'kitty.svg')
@@ -19,7 +19,7 @@ def run(*args):
     try:
         subprocess.check_call(args)
     except OSError:
-        raise SystemExit('You are missing the {} program needed to generate the kitty logo'.format(args[0]))
+        raise SystemExit(f'You are missing the {args[0]} program needed to generate the kitty logo')
 
 
 def render(output, sz=256, src=unframed_src):

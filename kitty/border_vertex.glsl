@@ -1,12 +1,11 @@
-#version GLSL_VERSION
 uniform uvec2 viewport;
-uniform vec3 default_bg;
-uniform vec3 active_border_color;
-uniform vec3 inactive_border_color;
-uniform vec3 bell_border_color;
-in uvec4 rect;  // left, top, right, bottom
+uniform uint colors[9];
+uniform float background_opacity;
+uniform float tint_opacity, tint_premult;
+uniform float gamma_lut[256];
+in vec4 rect;  // left, top, right, bottom
 in uint rect_color;
-out vec3 color;
+out vec4 color;
 
 // indices into the rect vector
 const int LEFT = 0;
@@ -22,21 +21,28 @@ const uvec2 pos_map[] = uvec2[4](
     uvec2(LEFT, TOP)
 );
 
-vec2 to_opengl(uint x, uint y) {
-    return vec2(
-        -1.0 + 2.0 * (float(x) / float(viewport.x)),
-        1.0 - 2.0 * (float(y) / float(viewport.y))
-    );
+float to_color(uint c) {
+    return gamma_lut[c & FF];
 }
 
-float to_color(uint c) {
-    return float(c & FF) / 255.0;
+float is_integer_value(uint c, float x) {
+    return 1. - step(0.5, abs(float(c) - x));
+}
+
+vec3 as_color_vector(uint c, int shift) {
+    return vec3(to_color(c >> shift), to_color(c >> (shift - 8)), to_color(c >> (shift - 16)));
 }
 
 void main() {
     uvec2 pos = pos_map[gl_VertexID];
-    gl_Position = vec4(to_opengl(rect[pos.x], rect[pos.y]), 0, 1);
-    int rc = int(rect_color);
-    vec3 window_bg = vec3(to_color(rect_color >> 24), to_color(rect_color >> 16), to_color(rect_color >> 8));
-    color = float(1 & rc) * default_bg + float((2 & rc) >> 1) * active_border_color + float((4 & rc) >> 2) * inactive_border_color + float((8 & rc) >> 3) * window_bg + float((16 & rc) >> 4) * bell_border_color;
+    gl_Position = vec4(rect[pos.x], rect[pos.y], 0, 1);
+    vec3 window_bg = as_color_vector(rect_color, 24);
+    uint rc = rect_color & FF;
+    vec3 color3 = as_color_vector(colors[rc], 16);
+    float is_window_bg = is_integer_value(rc, 3.);
+    float is_default_bg = is_integer_value(rc, 0.);
+    color3 = is_window_bg * window_bg + (1. - is_window_bg) * color3;
+    float final_opacity = is_default_bg * tint_opacity + (1. - is_default_bg) * background_opacity;
+    float final_premult_opacity = is_default_bg * tint_premult + (1. - is_default_bg) * background_opacity;
+    color = vec4(color3 * final_premult_opacity, final_opacity);
 }

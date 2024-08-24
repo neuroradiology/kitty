@@ -1,22 +1,20 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPLv3 Copyright: 2019, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
 import subprocess
 import time
 from contextlib import suppress
-from typing import Dict, NamedTuple, Optional
+from typing import NamedTuple, Optional
 from urllib.request import urlopen
 
 from .config import atomic_save
-from .constants import Version, cache_dir, kitty_exe, version
+from .constants import Version, cache_dir, clear_handled_signals, kitty_exe, version, website_url
 from .fast_data_types import add_timer, get_boss, monitor_pid
-from .notify import notify
 from .utils import log_error, open_url
 
-CHANGELOG_URL = 'https://sw.kovidgoyal.net/kitty/changelog.html'
-RELEASED_VERSION_URL = 'https://sw.kovidgoyal.net/kitty/current-version.txt'
+CHANGELOG_URL = website_url('changelog')
+RELEASED_VERSION_URL = website_url() + 'current-version.txt'
 CHECK_INTERVAL = 24 * 60 * 60.
 
 
@@ -38,11 +36,7 @@ def version_notification_log() -> str:
 
 
 def notify_new_version(release_version: Version) -> None:
-    notify(
-            'kitty update available!',
-            'kitty version {} released'.format('.'.join(map(str, release_version))),
-            identifier='new-version',
-    )
+    get_boss().notification_manager.send_new_version_notification('.'.join(map(str, release_version)))
 
 
 def get_released_version() -> str:
@@ -61,7 +55,7 @@ def parse_line(line: str) -> Notification:
     return Notification(v, float(timestamp), int(count))
 
 
-def read_cache() -> Dict[Version, Notification]:
+def read_cache() -> dict[Version, Notification]:
     notified_versions = {}
     with suppress(FileNotFoundError):
         with open(version_notification_log()) as f:
@@ -74,7 +68,7 @@ def read_cache() -> Dict[Version, Notification]:
     return notified_versions
 
 
-def already_notified(version: tuple) -> bool:
+def already_notified(version: tuple[int, int, int]) -> bool:
     notified_versions = read_cache()
     return version in notified_versions
 
@@ -104,8 +98,8 @@ def process_current_release(raw: str) -> None:
 
 
 def run_worker() -> None:
-    import time
     import random
+    import time
     time.sleep(random.randint(1000, 4000) / 1000)
     with suppress(BrokenPipeError):  # happens if parent process is killed before us
         print(get_released_version())
@@ -116,9 +110,9 @@ def update_check() -> bool:
         p = subprocess.Popen([
             kitty_exe(), '+runpy',
             'from kitty.update_check import run_worker; run_worker()'
-        ], stdout=subprocess.PIPE)
-    except OSError as e:
-        log_error('Failed to run kitty for update check, with error: {}'.format(e))
+        ], stdout=subprocess.PIPE, preexec_fn=clear_handled_signals)
+    except Exception as e:
+        log_error(f'Failed to run kitty for update check, with error: {e}')
         return False
     monitor_pid(p.pid)
     get_boss().set_update_check_process(p)

@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 from typing import Dict, Tuple, Type
@@ -21,9 +20,11 @@ all_layouts: Dict[str, Type[Layout]] = {
     Splits.name: Splits,
 }
 
+KeyType = Tuple[str, int, int, str]
+
 
 class CreateLayoutObjectFor:
-    cache: Dict[Tuple, Layout] = {}
+    cache: Dict[KeyType, Layout] = {}
 
     def __call__(
         self,

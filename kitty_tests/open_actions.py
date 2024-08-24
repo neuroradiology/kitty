@@ -1,10 +1,11 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 
 import os
 from contextlib import contextmanager
+
+from kitty.utils import get_editor
 
 from . import BaseTest
 
@@ -25,7 +26,8 @@ def patch_env(**kw):
 class TestOpenActions(BaseTest):
 
     def test_parsing_of_open_actions(self):
-        from kitty.open_actions import actions_for_url, KeyAction
+        from kitty.open_actions import KeyAction, actions_for_url
+        self.set_options()
         spec = '''
 protocol file
 mime text/*
@@ -43,7 +45,7 @@ action two
 '''
 
         def actions(url):
-            with patch_env(EDITOR='editor', FILE_PATH='notgood'):
+            with patch_env(FILE_PATH='notgood'):
                 return tuple(actions_for_url(url, spec))
 
         def single(url, func, *args):
@@ -52,6 +54,6 @@ action two
             self.ae(acts[0].func, func)
             self.ae(acts[0].args, args)
 
-        single('file://hostname/tmp/moo.txt#23', 'launch', 'editor', '/tmp/moo.txt', '23')
+        single('file://hostname/tmp/moo.txt#23', 'launch', *get_editor(), '/tmp/moo.txt', '23')
         single('some thing.txt', 'ignored')
         self.ae(actions('x:///a.txt'), (KeyAction('one', ()), KeyAction('two', ())))

@@ -132,6 +132,7 @@ typedef EGLBoolean (EGLAPIENTRY * PFN_eglMakeCurrent)(EGLDisplay,EGLSurface,EGLS
 typedef EGLBoolean (EGLAPIENTRY * PFN_eglSwapBuffers)(EGLDisplay,EGLSurface);
 typedef EGLBoolean (EGLAPIENTRY * PFN_eglSwapInterval)(EGLDisplay,EGLint);
 typedef const char* (EGLAPIENTRY * PFN_eglQueryString)(EGLDisplay,EGLint);
+typedef const char* (EGLAPIENTRY * PFN_eglQuerySurface)(EGLDisplay,EGLSurface,EGLint,EGLint*);
 typedef GLFWglproc (EGLAPIENTRY * PFN_eglGetProcAddress)(const char*);
 #define eglGetConfigAttrib _glfw.egl.GetConfigAttrib
 #define eglGetConfigs _glfw.egl.GetConfigs
@@ -149,6 +150,7 @@ typedef GLFWglproc (EGLAPIENTRY * PFN_eglGetProcAddress)(const char*);
 #define eglSwapBuffers _glfw.egl.SwapBuffers
 #define eglSwapInterval _glfw.egl.SwapInterval
 #define eglQueryString _glfw.egl.QueryString
+#define eglQuerySurface _glfw.egl.QuerySurface
 #define eglGetProcAddress _glfw.egl.GetProcAddress
 
 typedef EGLDisplay (EGLAPIENTRY * PFNEGLGETPLATFORMDISPLAYEXTPROC)(EGLenum,void*,const EGLint*);
@@ -160,11 +162,11 @@ typedef EGLSurface (EGLAPIENTRY * PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC)(EGLD
 //
 typedef struct _GLFWcontextEGL
 {
-   EGLConfig        config;
-   EGLContext       handle;
-   EGLSurface       surface;
+    EGLConfig        config;
+    EGLContext       handle;
+    EGLSurface       surface;
 
-   void*            client;
+    void*            client;
 
 } _GLFWcontextEGL;
 
@@ -186,6 +188,7 @@ typedef struct _GLFWlibraryEGL
     bool            EXT_platform_base;
     bool            EXT_platform_x11;
     bool            EXT_platform_wayland;
+    bool            EXT_present_opaque;
     bool            ANGLE_platform_angle;
     bool            ANGLE_platform_angle_opengl;
     bool            ANGLE_platform_angle_d3d;
@@ -210,6 +213,7 @@ typedef struct _GLFWlibraryEGL
     PFN_eglSwapBuffers          SwapBuffers;
     PFN_eglSwapInterval         SwapInterval;
     PFN_eglQueryString          QueryString;
+    PFN_eglQuerySurface         QuerySurface;
     PFN_eglGetProcAddress       GetProcAddress;
 
     PFNEGLGETPLATFORMDISPLAYEXTPROC GetPlatformDisplayEXT;

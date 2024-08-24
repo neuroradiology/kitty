@@ -30,6 +30,7 @@
 #define _GNU_SOURCE
 #include "internal.h"
 #include "backend_utils.h"
+#include "linux_desktop_settings.h"
 
 #include <X11/Xresource.h>
 
@@ -137,6 +138,8 @@ static void detectEWMH(void)
         getAtomIfSupported(supportedAtoms, atomCount, "_NET_WM_WINDOW_TYPE");
     _glfw.x11.NET_WM_WINDOW_TYPE_NORMAL =
         getAtomIfSupported(supportedAtoms, atomCount, "_NET_WM_WINDOW_TYPE_NORMAL");
+    _glfw.x11.NET_WM_WINDOW_TYPE_DOCK =
+        getAtomIfSupported(supportedAtoms, atomCount, "_NET_WM_WINDOW_TYPE_DOCK");
     _glfw.x11.NET_WORKAREA =
         getAtomIfSupported(supportedAtoms, atomCount, "_NET_WORKAREA");
     _glfw.x11.NET_CURRENT_DESKTOP =
@@ -147,6 +150,8 @@ static void detectEWMH(void)
         getAtomIfSupported(supportedAtoms, atomCount, "_NET_FRAME_EXTENTS");
     _glfw.x11.NET_REQUEST_FRAME_EXTENTS =
         getAtomIfSupported(supportedAtoms, atomCount, "_NET_REQUEST_FRAME_EXTENTS");
+    _glfw.x11.NET_WM_STRUT_PARTIAL =
+        getAtomIfSupported(supportedAtoms, atomCount, "_NET_WM_STRUT_PARTIAL");
 
     XFree(supportedAtoms);
 }
@@ -610,6 +615,12 @@ Cursor _glfwCreateCursorX11(const GLFWimage* image, int xhot, int yhot)
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
 
+GLFWAPI GLFWColorScheme glfwGetCurrentSystemColorTheme(void) {
+    return GLFW_COLOR_SCHEME_NO_PREFERENCE;
+}
+
+void _glfwPlatformInputColorScheme(GLFWColorScheme appearance UNUSED) { }
+
 int _glfwPlatformInit(void)
 {
     XInitThreads();
@@ -638,11 +649,13 @@ int _glfwPlatformInit(void)
                         "X11: Failed to initialize event loop data");
     }
     glfw_dbus_init(&_glfw.x11.dbus, &_glfw.x11.eventLoopData);
+    glfw_initialize_desktop_settings();  // needed for color scheme change notification
 
     _glfw.x11.screen = DefaultScreen(_glfw.x11.display);
     _glfw.x11.root = RootWindow(_glfw.x11.display, _glfw.x11.screen);
     _glfw.x11.context = XUniqueContext();
     _glfw.x11.RESOURCE_MANAGER = XInternAtom(_glfw.x11.display, "RESOURCE_MANAGER", True);
+    _glfw.x11._KDE_NET_WM_BLUR_BEHIND_REGION = None;
     XSelectInput(_glfw.x11.display, _glfw.x11.root, PropertyChangeMask);
 
     _glfwGetSystemContentScaleX11(&_glfw.x11.contentScaleX, &_glfw.x11.contentScaleY, false);
@@ -680,8 +693,14 @@ void _glfwPlatformTerminate(void)
 
     glfw_xkb_release(&_glfw.x11.xkb);
     glfw_dbus_terminate(&_glfw.x11.dbus);
-    free(_glfw.x11.primarySelectionString);
-    free(_glfw.x11.clipboardString);
+    if (_glfw.x11.mime_atoms.array) {
+        for (size_t i = 0; i < _glfw.x11.mime_atoms.sz; i++) {
+            free((void*)_glfw.x11.mime_atoms.array[i].mime);
+        }
+        free(_glfw.x11.mime_atoms.array);
+    }
+    if (_glfw.x11.clipboard_atoms.array) { free(_glfw.x11.clipboard_atoms.array); }
+    if (_glfw.x11.primary_atoms.array) { free(_glfw.x11.primary_atoms.array); }
 
     if (_glfw.x11.display)
     {

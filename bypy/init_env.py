@@ -11,9 +11,8 @@ import sys
 import tempfile
 from contextlib import suppress
 
-from bypy.constants import (
-    LIBDIR, PREFIX, PYTHON, SRC as KITTY_DIR, ismacos, worker_env
-)
+from bypy.constants import LIBDIR, PREFIX, PYTHON, ismacos, worker_env
+from bypy.constants import SRC as KITTY_DIR
 from bypy.utils import run_shell, walk
 
 
@@ -26,10 +25,11 @@ def initialize_constants():
     kitty_constants = {}
     src = read_src_file('constants.py')
     nv = re.search(r'Version\((\d+), (\d+), (\d+)\)', src)
-    kitty_constants['version'] = '%s.%s.%s' % (nv.group(1), nv.group(2), nv.group(3))
+    kitty_constants['version'] = f'{nv.group(1)}.{nv.group(2)}.{nv.group(3)}'
     kitty_constants['appname'] = re.search(
             r'appname: str\s+=\s+(u{0,1})[\'"]([^\'"]+)[\'"]', src
     ).group(2)
+    kitty_constants['cacerts_url'] = 'https://curl.haxx.se/ca/cacert.pem'
     return kitty_constants
 
 
@@ -46,7 +46,7 @@ def run(*args, **extra_env):
     return subprocess.call(list(args), env=env, cwd=cwd)
 
 
-SETUP_CMD = [PYTHON, 'setup.py', '--build-universal-binary']
+SETUP_CMD = [PYTHON, 'setup.py']
 
 
 def build_frozen_launcher(extra_include_dirs):
@@ -62,18 +62,29 @@ def build_frozen_launcher(extra_include_dirs):
 
 def run_tests(kitty_exe):
     with tempfile.TemporaryDirectory() as tdir:
-        env = {
+        uenv = {
             'KITTY_CONFIG_DIRECTORY': os.path.join(tdir, 'conf'),
             'KITTY_CACHE_DIRECTORY': os.path.join(tdir, 'cache')
         }
-        [os.mkdir(x) for x in env.values()]
-        cmd = [kitty_exe, '+runpy', 'from kitty_tests.main import run_tests; run_tests()']
+        [os.mkdir(x) for x in uenv.values()]
+        env = os.environ.copy()
+        env.update(uenv)
+        cmd = [kitty_exe, '+runpy', 'from kitty_tests.main import run_tests; run_tests(report_env=True)']
         print(*map(shlex.quote, cmd), flush=True)
-        if subprocess.call(cmd, env=env) != 0:
-            print('Checking of kitty build failed', file=sys.stderr)
+        if subprocess.call(cmd, env=env, cwd=build_frozen_launcher.writeable_src_dir) != 0:
+            print('Checking of kitty build failed, in directory:', build_frozen_launcher.writeable_src_dir, file=sys.stderr)
             os.chdir(os.path.dirname(kitty_exe))
             run_shell()
             raise SystemExit('Checking of kitty build failed')
+
+
+def build_frozen_tools(kitty_exe):
+    cmd = SETUP_CMD + ['--prefix', os.path.dirname(kitty_exe)] + ['build-frozen-tools']
+    if run(*cmd, cwd=build_frozen_launcher.writeable_src_dir) != 0:
+        print('Building of frozen kitten failed', file=sys.stderr)
+        os.chdir(KITTY_DIR)
+        run_shell()
+        raise SystemExit('Building of kitten launcher failed')
 
 
 def sanitize_source_folder(path: str) -> None:
@@ -95,6 +106,8 @@ def build_c_extensions(ext_dir, args):
     cmd = SETUP_CMD + ['macos-freeze' if ismacos else 'linux-freeze']
     if args.dont_strip:
         cmd.append('--debug')
+    if args.extra_program_data:
+        cmd.append(f'--vcs-rev={args.extra_program_data}')
     dest = kitty_constants['appname'] + ('.app' if ismacos else '')
     dest = build_frozen_launcher.prefix = os.path.join(ext_dir, dest)
     cmd += ['--prefix', dest, '--full']

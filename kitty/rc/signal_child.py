@@ -1,13 +1,9 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 from typing import TYPE_CHECKING, Optional
 
-from .base import (
-    MATCH_WINDOW_OPTION, ArgsType, Boss, MatchError, PayloadGetType,
-    PayloadType, RCOptions, RemoteCommand, ResponseType, Window
-)
+from .base import MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand, ResponseType, Window
 
 if TYPE_CHECKING:
     from kitty.cli_stub import SignalChildRCOptions as CLIOptions
@@ -15,39 +11,40 @@ if TYPE_CHECKING:
 
 class SignalChild(RemoteCommand):
 
-    '''
-    signals: The signals, a list of names, such as SIGTERM, SIGKILL, SIGUSR1, etc.
-    match: Which windows to change the title in
+    protocol_spec = __doc__ = '''
+    signals+/list.str: The signals, a list of names, such as :code:`SIGTERM`, :code:`SIGKILL`, :code:`SIGUSR1`, etc.
+    match/str: Which windows to send the signals to
     '''
 
-    short_desc = 'Send a signal to the foreground process in the specified window'
+    short_desc = 'Send a signal to the foreground process in the specified windows'
     desc = (
-        'Send one or more signals to the foreground process in the specified window(s).'
-        ' If you use the :option:`kitty @ signal-child --match` option'
-        ' the title will be set for all matched windows. By default, only the active'
+        'Send one or more signals to the foreground process in the specified windows.'
+        ' If you use the :option:`kitten @ signal-child --match` option'
+        ' the signal will be sent for all matched windows. By default, only the active'
         ' window is affected. If you do not specify any signals, :code:`SIGINT` is sent by default.'
-        ' You can also map this to a keystroke in kitty.conf, for example::\n\n'
-        '    map F1 signal_child SIGTERM'
+        ' You can also map :ac:`signal_child` to a shortcut in :file:`kitty.conf`, for example::\n\n'
+        '    map f1 signal_child SIGTERM'
     )
     options_spec = '''\
+--no-response
+type=bool-set
+default=false
+Don't wait for a response indicating the success of the action. Note that
+using this option means that you will not be notified of failures.
     ''' + '\n\n' + MATCH_WINDOW_OPTION
-    argspec = '[SIGNAL_NAME ...]'
+    args = RemoteCommand.Args(json_field='signals', spec='[SIGNAL_NAME ...]', value_if_unspecified=('SIGINT',))
 
     def message_to_kitty(self, global_opts: RCOptions, opts: 'CLIOptions', args: ArgsType) -> PayloadType:
-        return {'match': opts.match, 'signals': [x.upper() for x in args] or ['SIGINT']}
+        # defaults to signal the window this command is run in
+        return {'match': opts.match, 'self': True, 'signals': [x.upper() for x in args] or ['SIGINT']}
 
     def response_from_kitty(self, boss: Boss, window: Optional[Window], payload_get: PayloadGetType) -> ResponseType:
         import signal
-        windows = [window or boss.active_window]
-        match = payload_get('match')
-        if match:
-            windows = list(boss.match_windows(match))
-            if not windows:
-                raise MatchError(match)
         signals = tuple(getattr(signal, x) for x in payload_get('signals'))
-        for window in windows:
+        for window in self.windows_for_match_payload(boss, window, payload_get):
             if window:
                 window.signal_child(*signals)
+        return None
 
 
 signal_child = SignalChild()

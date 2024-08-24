@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 # Replay the log from --dump-commands. To use first run
@@ -12,9 +11,8 @@ import sys
 from contextlib import suppress
 from typing import Any
 
-
-CSI = '\033['
-OSC = '\033]'
+CSI = '\x1b['
+OSC = '\x1b]'
 
 
 def write(x: str) -> None:
@@ -43,11 +41,11 @@ def screen_alternate_keypad_mode() -> None:
 
 
 def screen_cursor_position(y: int, x: int) -> None:
-    write(CSI + '%s;%sH' % (y, x))
+    write(f'{CSI}{y};{x}H')
 
 
 def screen_cursor_forward(amt: int) -> None:
-    write(CSI + '%sC' % amt)
+    write(f'{CSI}{amt}C')
 
 
 def screen_save_cursor() -> None:
@@ -59,97 +57,129 @@ def screen_restore_cursor() -> None:
 
 
 def screen_cursor_back1(amt: int) -> None:
-    write(CSI + '%sD' % amt)
+    write(f'{CSI}{amt}D')
 
 
 def screen_save_modes() -> None:
-    write(CSI + '?s')
+    write(f'{CSI}?s')
 
 
 def screen_restore_modes() -> None:
-    write(CSI + '?r')
+    write(f'{CSI}?r')
 
 
 def screen_designate_charset(which: int, to: int) -> None:
     w = '()'[int(which)]
     t = chr(int(to))
-    write('\033' + w + t)
+    write(f'\x1b{w}{t}')
 
 
 def select_graphic_rendition(*a: int) -> None:
-    write(CSI + '%sm' % ';'.join(map(str, a)))
+    write(f'{CSI}{";".join(map(str, a))}m')
+
+
+def deccara(*a: int) -> None:
+    write(f'{CSI}{";".join(map(str, a))}$r')
 
 
 def screen_cursor_to_column(c: int) -> None:
-    write(CSI + '%dG' % c)
+    write(f'{CSI}{c}G')
 
 
 def screen_cursor_to_line(ln: int) -> None:
-    write(CSI + '%dd' % ln)
+    write(f'{CSI}{ln}d')
 
 
 def screen_set_mode(x: int, private: bool) -> None:
-    write(CSI + ('?' if private else '') + str(x) + 'h')
+    write(f'{CSI}{"?" if private else ""}{x}h')
+
+
+def screen_save_mode(x: int, private: bool) -> None:
+    write(f'{CSI}{"?" if private else ""}{x}s')
 
 
 def screen_reset_mode(x: int, private: bool) -> None:
-    write(CSI + ('?' if private else '') + str(x) + 'l')
+    write(f'{CSI}{"?" if private else ""}{x}l')
+
+
+def screen_restore_mode(x: int, private: bool) -> None:
+    write(f'{CSI}{"?" if private else ""}{x}r')
 
 
 def screen_set_margins(t: int, b: int) -> None:
-    write(CSI + '%d;%dr' % (t, b))
+    write(f'{CSI}{t};{b}r')
 
 
 def screen_indexn(n: int) -> None:
-    write(CSI + '%dS' % n)
+    write(f'{CSI}{n}S')
 
 
 def screen_delete_characters(count: int) -> None:
-    write(CSI + '%dP' % count)
+    write(f'{CSI}{count}P')
 
 
 def screen_push_colors(which: int) -> None:
-    write(CSI + '%d#P' % which)
+    write(f'{CSI}{which}#P')
 
 
 def screen_pop_colors(which: int) -> None:
-    write(CSI + '%d#Q' % which)
+    write(f'{CSI}{which}#Q')
 
 
 def screen_report_colors() -> None:
-    write(CSI + '#R')
+    write(f'{CSI}#R')
 
 
 def screen_repeat_character(num: int) -> None:
-    write(CSI + '%db' % num)
+    write(f'{CSI}{num}b')
 
 
 def screen_insert_characters(count: int) -> None:
-    write(CSI + '%d@' % count)
+    write(f'{CSI}{count}@')
 
 
 def screen_scroll(count: int) -> None:
-    write(CSI + '%dS' % count)
+    write(f'{CSI}{count}S')
 
 
 def screen_erase_in_display(how: int, private: bool) -> None:
-    write(CSI + ('?' if private else '') + str(how) + 'J')
+    write(f'{CSI}{"?" if private else ""}{how}J')
 
 
 def screen_erase_in_line(how: int, private: bool) -> None:
-    write(CSI + ('?' if private else '') + str(how) + 'K')
+    write(f'{CSI}{"?" if private else ""}{how}K')
+
+
+def screen_erase_characters(num: int) -> None:
+    write(f'{CSI}{num}X')
 
 
 def screen_delete_lines(num: int) -> None:
-    write(CSI + str(num) + 'M')
+    write(f'{CSI}{num}M')
 
 
 def screen_cursor_up2(count: int) -> None:
-    write(CSI + '%dA' % count)
+    write(f'{CSI}{count}A')
 
 
 def screen_cursor_down(count: int) -> None:
-    write(CSI + '%dB' % count)
+    write(f'{CSI}{count}B')
+
+
+def screen_report_key_encoding_flags() -> None:
+    write(f'{CSI}?u')
+
+
+def screen_set_key_encoding_flags(flags: int, how: int) -> None:
+    write(f'{CSI}={flags};{how}u')
+
+
+def screen_push_key_encoding_flags(flags: int) -> None:
+    write(f'{CSI}>{flags}u')
+
+
+def screen_pop_key_encoding_flags(flags: int) -> None:
+    write(f'{CSI}<{flags}u')
 
 
 def screen_carriage_return() -> None:
@@ -169,11 +199,11 @@ def screen_backspace() -> None:
 
 
 def screen_set_cursor(mode: int, secondary: int) -> None:
-    write(CSI + '%d q' % secondary)
+    write(f'{CSI}{secondary} q')
 
 
 def screen_insert_lines(num: int) -> None:
-    write(CSI + '%dL' % num)
+    write(f'{CSI}{num}L')
 
 
 def draw(*a: str) -> None:
@@ -181,7 +211,7 @@ def draw(*a: str) -> None:
 
 
 def screen_manipulate_title_stack(op: int, which: int) -> None:
-    write(CSI + '%d;%dt' % (op, which))
+    write(f'{CSI}{op};{which}t')
 
 
 def report_device_attributes(mode: int, char: int) -> None:
@@ -190,28 +220,58 @@ def report_device_attributes(mode: int, char: int) -> None:
         x += chr(char)
     if mode:
         x += str(mode)
-    write(CSI + x + 'c')
+    write(f'{x}c')
 
 
 def screen_decsace(mode: int) -> None:
-    write(CSI + str(mode) + '*x')
+    write(f'{CSI}{mode}*x')
 
 
 def screen_set_8bit_controls(mode: int) -> None:
-    write('\x1b ' + ('G' if mode else 'F'))
+    write(f'\x1b {"G" if mode else "F"}')
 
 
 def write_osc(code: int, string: str = '') -> None:
     if string:
-        string = ';' + string
-    write(OSC + str(code) + string + '\x07')
+        write(f'{OSC}{code};{string}\x07')
+    else:
+        write(f'{OSC}{code}\x07')
 
 
-set_dynamic_color = set_color_table_color = process_cwd_notification = write_osc
+set_color_table_color = process_cwd_notification = write_osc
+clipboard_control_pending: str = ''
+
+
+def set_dynamic_color(payload: str) -> None:
+    code, data = payload.partition(' ')[::2]
+    write_osc(int(code), data)
+
+
+def shell_prompt_marking(payload: str) -> None:
+    write_osc(133, payload)
+
+
+def clipboard_control(payload: str) -> None:
+    global clipboard_control_pending
+    code, data = payload.split(';', 1)
+    if code == '-52':
+        if clipboard_control_pending:
+            clipboard_control_pending += data.lstrip(';')
+        else:
+            clipboard_control_pending = payload
+        return
+    if clipboard_control_pending:
+        clipboard_control_pending += data.lstrip(';')
+        payload = clipboard_control_pending
+        clipboard_control_pending = ''
+    write(f'{OSC}{payload}\x07')
 
 
 def replay(raw: str) -> None:
-    specials = {'draw', 'set_title', 'set_icon', 'set_dynamic_color', 'set_color_table_color', 'process_cwd_notification'}
+    specials = {
+        'draw', 'set_title', 'set_icon', 'set_dynamic_color', 'set_color_table_color',
+        'process_cwd_notification', 'clipboard_control', 'shell_prompt_marking'
+    }
     for line in raw.splitlines():
         if line.strip() and not line.startswith('#'):
             cmd, rest = line.partition(' ')[::2]

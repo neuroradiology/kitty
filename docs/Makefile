@@ -1,9 +1,14 @@
 # Minimal makefile for Sphinx documentation
 #
 
+ifdef FAIL_WARN
+override FAIL_WARN=-W
+endif
+
 # You can set these variables from the command line.
-SPHINXOPTS    = -j auto -T $(FAIL_WARN)
+SPHINXOPTS    = -n -q -j auto -T $(FAIL_WARN) $(OPTS)
 SPHINXBUILD   = sphinx-build
+SPHINXAUTOBUILD = sphinx-autobuild
 SPHINXPROJ    = kitty
 SOURCEDIR     = .
 BUILDDIR      = _build
@@ -18,3 +23,7 @@ help:
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
 %: Makefile
 	$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+
+
+develop-docs:
+	$(SPHINXAUTOBUILD) --ignore "$(abspath $(SOURCEDIR))/generated/*" --watch ../kitty --watch ../kittens -b dirhtml "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS)

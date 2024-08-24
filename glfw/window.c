@@ -34,7 +34,6 @@
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
-#include <float.h>
 
 
 //////////////////////////////////////////////////////////////////////////
@@ -57,7 +56,7 @@ void _glfwInputWindowFocus(_GLFWwindow* window, bool focused)
             if (window->activated_keys[i].key > 0 && window->activated_keys[i].action == GLFW_PRESS)
             {
                 const int native_key = _glfwPlatformGetNativeKeyForKey(window->activated_keys[i].key);
-                GLFWkeyevent ev = {.key = window->activated_keys[i].key, .native_key = native_key, .action = GLFW_RELEASE};
+                GLFWkeyevent ev = {.key = window->activated_keys[i].key, .native_key = native_key, .action = GLFW_RELEASE, .fake_event_on_focus_change = true};
                 _glfwInputKeyboard(window, &ev);
             }
         }
@@ -71,7 +70,7 @@ void _glfwInputWindowFocus(_GLFWwindow* window, bool focused)
         _glfw.focusedWindowId = window->id;
 }
 
-_GLFWwindow* _glfwFocusedWindow() {
+_GLFWwindow* _glfwFocusedWindow(void) {
     if (_glfw.focusedWindowId) {
         _GLFWwindow *w = _glfw.windowListHead;
         while (w) {
@@ -315,6 +314,7 @@ void glfwDefaultWindowHints(void)
     _glfw.hints.window.autoIconify  = true;
     _glfw.hints.window.centerCursor = true;
     _glfw.hints.window.focusOnShow  = true;
+    _glfw.hints.window.blur_radius  = 0;
 
     // The default is 24 bits of color, 24 bits of depth and 8 bits of stencil,
     // double buffered
@@ -332,6 +332,8 @@ void glfwDefaultWindowHints(void)
 
     // The default is to use full Retina resolution framebuffers
     _glfw.hints.window.ns.retina = true;
+    // use the default colorspace assigned by the system
+    _glfw.hints.window.ns.color_space = 0;
 }
 
 GLFWAPI void glfwWindowHint(int hint, int value)
@@ -412,6 +414,12 @@ GLFWAPI void glfwWindowHint(int hint, int value)
         case GLFW_COCOA_RETINA_FRAMEBUFFER:
             _glfw.hints.window.ns.retina = value ? true : false;
             return;
+        case GLFW_COCOA_COLOR_SPACE:
+            _glfw.hints.window.ns.color_space = value;
+            return;
+        case GLFW_BLUR_RADIUS:
+            _glfw.hints.window.blur_radius = value;
+            return;
         case GLFW_COCOA_GRAPHICS_SWITCHING:
             _glfw.hints.context.nsgl.offline = value ? true : false;
             return;
@@ -460,8 +468,10 @@ GLFWAPI void glfwWindowHint(int hint, int value)
         case GLFW_REFRESH_RATE:
             _glfw.hints.refreshRate = value;
             return;
+        case GLFW_WAYLAND_BGCOLOR:
+            _glfw.hints.window.wl.bgcolor = value;
+            return;
     }
-
     _glfwInputError(GLFW_INVALID_ENUM, "Invalid window hint 0x%08X", hint);
 }
 
@@ -701,8 +711,8 @@ GLFWAPI void glfwSetWindowSizeIncrements(GLFWwindow* handle, int widthincr, int 
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
     assert(window != NULL);
-    assert(widthincr >= 0);
-    assert(heightincr >= 0);
+    assert(widthincr >= 0 || widthincr == GLFW_DONT_CARE);
+    assert(heightincr >= 0 || heightincr == GLFW_DONT_CARE);
 
     _GLFW_REQUIRE_INIT();
 
@@ -1004,6 +1014,16 @@ GLFWAPI void glfwSetWindowAttrib(GLFWwindow* handle, int attrib, int value)
         _glfwInputError(GLFW_INVALID_ENUM, "Invalid window attribute 0x%08X", attrib);
 }
 
+GLFWAPI int glfwSetWindowBlur(GLFWwindow* handle, int value)
+{
+    _GLFWwindow* window = (_GLFWwindow*) handle;
+    assert(window != NULL);
+
+    _GLFW_REQUIRE_INIT_OR_RETURN(0);
+    return _glfwPlatformSetWindowBlur(window, value);
+}
+
+
 GLFWAPI GLFWmonitor* glfwGetWindowMonitor(GLFWwindow* handle)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
@@ -1056,6 +1076,14 @@ GLFWAPI bool glfwToggleFullscreen(GLFWwindow* wh, unsigned int flags) {
     _GLFWwindow* window = (_GLFWwindow*) wh;
     if (window) return _glfwPlatformToggleFullscreen(window, flags);
     return false;
+}
+
+GLFWAPI bool glfwIsFullscreen(GLFWwindow* wh, unsigned int flags) {
+    return _glfwPlatformIsFullscreen((_GLFWwindow*)wh, flags);
+}
+
+GLFWAPI bool glfwAreSwapsAllowed(const GLFWwindow* wh) {
+    return !(((_GLFWwindow*)wh)->swaps_disallowed);
 }
 
 GLFWAPI void glfwSetWindowUserPointer(GLFWwindow* handle, void* pointer)

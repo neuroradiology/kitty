@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
 from enum import IntEnum
 from functools import lru_cache
-from typing import Dict, NamedTuple, Optional, Tuple, Union
+from typing import NamedTuple, Optional, Union
 
 from . import fast_data_types as defines
 from .fast_data_types import KeyEvent as WindowSystemKeyEvent
@@ -147,24 +146,24 @@ csi_number_to_functional_number_map = {
     24: 57375,
     27: 57344,
     127: 57347}
-letter_trailer_to_csi_number_map = {'A': 57352, 'B': 57353, 'C': 57351, 'D': 57350, 'E': 57427, 'F': 8, 'H': 7, 'P': 11, 'Q': 12, 'R': 13, 'S': 14}
-tilde_trailers = {57348, 57349, 57354, 57355, 57368, 57369, 57370, 57371, 57372, 57373, 57374, 57375}
+letter_trailer_to_csi_number_map = {'A': 57352, 'B': 57353, 'C': 57351, 'D': 57350, 'E': 57427, 'F': 8, 'H': 7, 'P': 11, 'Q': 12, 'S': 14}
+tilde_trailers = {57348, 57349, 57354, 57355, 57366, 57368, 57369, 57370, 57371, 57372, 57373, 57374, 57375}
 # end csi mapping
 # }}}
 
 
 @lru_cache(2)
-def get_name_to_functional_number_map() -> Dict[str, int]:
+def get_name_to_functional_number_map() -> dict[str, int]:
     return {v: k for k, v in functional_key_number_to_name_map.items()}
 
 
 @lru_cache(2)
-def get_functional_to_csi_number_map() -> Dict[int, int]:
+def get_functional_to_csi_number_map() -> dict[int, int]:
     return {v: k for k, v in csi_number_to_functional_number_map.items()}
 
 
 @lru_cache(2)
-def get_csi_number_to_letter_trailer_map() -> Dict[int, str]:
+def get_csi_number_to_letter_trailer_map() -> dict[int, str]:
     return {v: k for k, v in letter_trailer_to_csi_number_map.items()}
 
 
@@ -182,7 +181,7 @@ class EventType(IntEnum):
 @lru_cache(maxsize=128)
 def parse_shortcut(spec: str) -> ParsedShortcut:
     if spec.endswith('+'):
-        spec = spec[:-1] + 'plus'
+        spec = f'{spec[:-1]}plus'
     parts = spec.split('+')
     key_name = parts[-1]
     key_name = functional_key_name_aliases.get(key_name.upper(), key_name)
@@ -227,6 +226,22 @@ class KeyEvent(NamedTuple):
         if is_shifted and (mods & ~SHIFT, self.shifted_key) == spec:
             return True
         return False
+
+    def matches_without_mods(self, spec: Union[str, ParsedShortcut], types: int = EventType.PRESS | EventType.REPEAT) -> bool:
+        if not self.type & types:
+            return False
+        if isinstance(spec, str):
+            spec = parse_shortcut(spec)
+        return self.key == spec[1]
+
+    def matches_text(self, text: str, case_sensitive: bool = False) -> bool:
+        if case_sensitive:
+            return self.text == text
+        return self.text.lower() == text.lower()
+
+    @property
+    def is_release(self) -> bool:
+        return self.type is EventType.RELEASE
 
     @property
     def mods_without_locks(self) -> int:
@@ -277,14 +292,18 @@ enter_key = KeyEvent(key='ENTER')
 backspace_key = KeyEvent(key='BACKSPACE')
 config_mod_map = {
     'SHIFT': SHIFT,
+    '⇧': SHIFT,
     'ALT': ALT,
     'OPTION': ALT,
+    'OPT': ALT,
     '⌥': ALT,
-    '⌘': SUPER,
-    'CMD': SUPER,
     'SUPER': SUPER,
-    'CTRL': CTRL,
+    'COMMAND': SUPER,
+    'CMD': SUPER,
+    '⌘': SUPER,
     'CONTROL': CTRL,
+    'CTRL': CTRL,
+    '⌃': CTRL,
     'HYPER': HYPER,
     'META': META,
     'NUM_LOCK': NUM_LOCK,
@@ -295,7 +314,7 @@ config_mod_map = {
 def decode_key_event(csi: str, csi_type: str) -> KeyEvent:
     parts = csi.split(';')
 
-    def get_sub_sections(x: str, missing: int = 0) -> Tuple[int, ...]:
+    def get_sub_sections(x: str, missing: int = 0) -> tuple[int, ...]:
         return tuple(int(y) if y else missing for y in x.split(':'))
 
     first_section = get_sub_sections(parts[0])
@@ -335,6 +354,8 @@ def decode_key_event(csi: str, csi_type: str) -> KeyEvent:
 def csi_number_for_name(key_name: str) -> int:
     if not key_name:
         return 0
+    if key_name in ('F3', 'ENTER'):
+        return 13
     fn = get_name_to_functional_number_map().get(key_name)
     if fn is None:
         return ord(key_name)

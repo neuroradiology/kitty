@@ -34,7 +34,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <assert.h>
 
 
 // The global variables below comprise all mutable global data in GLFW
@@ -58,7 +57,10 @@ static _GLFWinitconfig _glfwInitHints = {
     .ns = {
         .menubar = true,  // macOS menu bar
         .chdir = true   // macOS bundle chdir
-    }
+    },
+    .wl = {
+        .ime = true,  // Wayland IME support
+    },
 };
 
 // Terminate the library
@@ -68,6 +70,8 @@ static void terminate(void)
     int i;
 
     memset(&_glfw.callbacks, 0, sizeof(_glfw.callbacks));
+    _glfw_free_clipboard_data(&_glfw.clipboard);
+    _glfw_free_clipboard_data(&_glfw.primary);
 
     while (_glfw.windowListHead)
         glfwDestroyWindow((GLFWwindow*) _glfw.windowListHead);
@@ -206,7 +210,7 @@ _glfwDebug(const char *format, ...) {
     {
         va_list vl;
 
-        fprintf(stderr, "[%.4f] ", monotonic_t_to_s_double(glfwGetTime()));
+        fprintf(stderr, "[%.3f] ", monotonic_t_to_s_double(monotonic()));
         va_start(vl, format);
         vfprintf(stderr, format, vl);
         va_end(vl);
@@ -227,6 +231,7 @@ GLFWAPI int glfwInit(monotonic_t start_time)
 
     memset(&_glfw, 0, sizeof(_glfw));
     _glfw.hints.init = _glfwInitHints;
+    _glfw.ignoreOSKeyboardProcessing = false;
 
     if (!_glfwPlatformInit())
     {
@@ -293,6 +298,9 @@ GLFWAPI void glfwInitHint(int hint, int value)
             return;
         case GLFW_COCOA_MENUBAR:
             _glfwInitHints.ns.menubar = value;
+            return;
+        case GLFW_WAYLAND_IME:
+            _glfwInitHints.wl.ime = value;
             return;
     }
 
@@ -379,9 +387,38 @@ GLFWAPI GLFWapplicationclosefun glfwSetApplicationCloseCallback(GLFWapplicationc
     return cbfun;
 }
 
+GLFWAPI GLFWsystemcolorthemechangefun glfwSetSystemColorThemeChangeCallback(GLFWsystemcolorthemechangefun cbfun)
+{
+    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.system_color_theme_change, cbfun);
+    return cbfun;
+}
+
+
 GLFWAPI GLFWdrawtextfun glfwSetDrawTextFunction(GLFWdrawtextfun cbfun)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
     _GLFW_SWAP_POINTERS(_glfw.callbacks.draw_text, cbfun);
+    return cbfun;
+}
+
+GLFWAPI GLFWcurrentselectionfun glfwSetCurrentSelectionCallback(GLFWcurrentselectionfun cbfun)
+{
+    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.get_current_selection, cbfun);
+    return cbfun;
+}
+
+GLFWAPI GLFWhascurrentselectionfun glfwSetHasCurrentSelectionCallback(GLFWhascurrentselectionfun cbfun)
+{
+    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.has_current_selection, cbfun);
+    return cbfun;
+}
+
+GLFWAPI GLFWimecursorpositionfun glfwSetIMECursorPositionCallback(GLFWimecursorpositionfun cbfun)
+{
+    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.get_ime_cursor_position, cbfun);
     return cbfun;
 }

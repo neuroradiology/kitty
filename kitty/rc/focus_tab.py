@@ -1,14 +1,10 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 
 from typing import TYPE_CHECKING, Optional
 
-from .base import (
-    MATCH_TAB_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions,
-    RemoteCommand, ResponseType, Window
-)
+from .base import MATCH_TAB_OPTION, ArgsType, Boss, PayloadGetType, PayloadType, RCOptions, RemoteCommand, ResponseType, Window
 
 if TYPE_CHECKING:
     from kitty.cli_stub import FocusTabRCOptions as CLIOptions
@@ -16,8 +12,8 @@ if TYPE_CHECKING:
 
 class FocusTab(RemoteCommand):
 
-    '''
-    match: The tab to focus
+    protocol_spec = __doc__ = '''
+    match/str: The tab to focus
     '''
 
     short_desc = 'Focus the specified tab'
@@ -30,18 +26,16 @@ default=false
 Don't wait for a response indicating the success of the action. Note that
 using this option means that you will not be notified of failures.
 '''
-    argspec = ''
 
     def message_to_kitty(self, global_opts: RCOptions, opts: 'CLIOptions', args: ArgsType) -> PayloadType:
-        if opts.no_response:
-            global_opts.no_command_response = True
-        return {'match': opts.match}
+        return {'match': opts.match, 'no_response': opts.no_response}
 
     def response_from_kitty(self, boss: Boss, window: Optional[Window], payload_get: PayloadGetType) -> ResponseType:
         for tab in self.tabs_for_match_payload(boss, window, payload_get):
             if tab:
                 boss.set_active_tab(tab)
                 break
+        return None
 
 
 focus_tab = FocusTab()

@@ -41,13 +41,27 @@
 
 // Get the name of the specified display, or NULL
 //
-static char* getDisplayName(CGDirectDisplayID displayID)
+static char*
+getDisplayName(CGDirectDisplayID displayID, NSScreen* screen)
 {
+    // IOKit doesn't work on Apple Silicon anymore
+    // Luckily, 10.15 introduced -[NSScreen localizedName].
+    // Use it if available, and fall back to IOKit otherwise.
+    if (screen)
+    {
+        if ([screen respondsToSelector:@selector(localizedName)])
+        {
+            NSString* name = [screen valueForKey:@"localizedName"];
+            if (name) {
+                return _glfw_strdup([name UTF8String]);
+            }
+        }
+    }
     io_iterator_t it;
     io_service_t service;
     CFDictionaryRef info;
 
-    if (IOServiceGetMatchingServices(kIOMasterPortDefault,
+    if (IOServiceGetMatchingServices(0,
                                      IOServiceMatching("IODisplayConnect"),
                                      &it) != 0)
     {
@@ -89,7 +103,7 @@ static char* getDisplayName(CGDirectDisplayID displayID)
     if (!service)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
-                        "Cocoa: Failed to find service port for display, cannot get its name, using Unknown");
+                        "Cocoa: Failed to find service port for display");
         return NULL;
     }
 
@@ -245,7 +259,7 @@ static double getFallbackRefreshRate(CGDirectDisplayID displayID)
     io_iterator_t it;
     io_service_t service;
 
-    if (IOServiceGetMatchingServices(kIOMasterPortDefault,
+    if (IOServiceGetMatchingServices(0,
                                      IOServiceMatching("IOFramebuffer"),
                                      &it) != 0)
     {
@@ -309,16 +323,14 @@ static double getFallbackRefreshRate(CGDirectDisplayID displayID)
 //////                       GLFW internal API                      //////
 //////////////////////////////////////////////////////////////////////////
 
-void _glfwClearDisplayLinks() {
+void _glfwClearDisplayLinks(void) {
     for (size_t i = 0; i < _glfw.ns.displayLinks.count; i++) {
         if (_glfw.ns.displayLinks.entries[i].displayLink) {
             CVDisplayLinkStop(_glfw.ns.displayLinks.entries[i].displayLink);
             CVDisplayLinkRelease(_glfw.ns.displayLinks.entries[i].displayLink);
-            _glfw.ns.displayLinks.entries[i].displayLink = nil;
-            _glfw.ns.displayLinks.entries[i].lastRenderFrameRequestedAt = 0;
-            _glfw.ns.displayLinks.entries[i].first_unserviced_render_frame_request_at = 0;
         }
     }
+    memset(_glfw.ns.displayLinks.entries, 0, sizeof(_GLFWDisplayLinkNS) * _glfw.ns.displayLinks.count);
     _glfw.ns.displayLinks.count = 0;
 }
 
@@ -340,16 +352,21 @@ _glfw_create_cv_display_link(_GLFWDisplayLinkNS *entry) {
     CVDisplayLinkSetOutputCallback(entry->displayLink, &displayLinkCallback, (void*)(uintptr_t)entry->displayID);
 }
 
-static void
-createDisplayLink(CGDirectDisplayID displayID) {
-    if (_glfw.ns.displayLinks.count >= sizeof(_glfw.ns.displayLinks.entries)/sizeof(_glfw.ns.displayLinks.entries[0]) - 1) return;
+_GLFWDisplayLinkNS*
+_glfw_create_display_link(CGDirectDisplayID displayID) {
+    if (_glfw.ns.displayLinks.count >= arraysz(_glfw.ns.displayLinks.entries) - 1) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Too many monitors cannot create display link");
+        return NULL;
+    }
     for (size_t i = 0; i < _glfw.ns.displayLinks.count; i++) {
-        if (_glfw.ns.displayLinks.entries[i].displayID == displayID) return;
+        // already created in this run
+        if (_glfw.ns.displayLinks.entries[i].displayID == displayID) return _glfw.ns.displayLinks.entries + i;
     }
     _GLFWDisplayLinkNS *entry = &_glfw.ns.displayLinks.entries[_glfw.ns.displayLinks.count++];
     memset(entry, 0, sizeof(_GLFWDisplayLinkNS));
     entry->displayID = displayID;
     _glfw_create_cv_display_link(entry);
+    return entry;
 }
 
 // Poll for changes in the set of connected monitors
@@ -357,11 +374,13 @@ createDisplayLink(CGDirectDisplayID displayID) {
 void _glfwPollMonitorsNS(void)
 {
     uint32_t displayCount;
-
     CGGetOnlineDisplayList(0, NULL, &displayCount);
     CGDirectDisplayID* displays = calloc(displayCount, sizeof(CGDirectDisplayID));
     CGGetOnlineDisplayList(displayCount, displays, &displayCount);
     _glfwClearDisplayLinks();
+    if (_glfw.hints.init.debugRendering) {
+        fprintf(stderr, "Polling for monitors: %u found\n", displayCount);
+    }
 
     for (int i = 0;  i < _glfw.monitorCount;  i++)
         _glfw.monitors[i]->ns.screen = nil;
@@ -378,32 +397,57 @@ void _glfwPollMonitorsNS(void)
 
     for (uint32_t i = 0;  i < displayCount;  i++)
     {
-        if (CGDisplayIsAsleep(displays[i]))
+        if (CGDisplayIsAsleep(displays[i])) {
+            if (_glfw.hints.init.debugRendering) fprintf(stderr, "Ignoring sleeping display: %u", displays[i]);
             continue;
+        }
+
+        const uint32_t unitNumber = CGDisplayUnitNumber(displays[i]);
+        NSScreen* screen = nil;
+
+        for (screen in [NSScreen screens])
+        {
+            NSNumber* screenNumber = [screen deviceDescription][@"NSScreenNumber"];
+
+            // HACK: Compare unit numbers instead of display IDs to work around
+            //       display replacement on machines with automatic graphics
+            //       switching
+            if (CGDisplayUnitNumber([screenNumber unsignedIntValue]) == unitNumber)
+                break;
+        }
 
         // HACK: Compare unit numbers instead of display IDs to work around
         //       display replacement on machines with automatic graphics
         //       switching
-        const uint32_t unitNumber = CGDisplayUnitNumber(displays[i]);
-
-        for (uint32_t j = 0;  j < disconnectedCount;  j++)
+        uint32_t j;
+        for (j = 0;  j < disconnectedCount;  j++)
         {
             if (disconnected[j] && disconnected[j]->ns.unitNumber == unitNumber)
             {
+                disconnected[j]->ns.displayID  = displays[i];
+                disconnected[j]->ns.screen = screen;
+                _glfw_create_display_link(displays[i]);
                 disconnected[j] = NULL;
                 break;
             }
         }
 
+        if (j < disconnectedCount)
+            continue;
+
         const CGSize size = CGDisplayScreenSize(displays[i]);
-        char* name = getDisplayName(displays[i]);
-        if (!name)
-            name = _glfw_strdup("Unknown");
+        char* name = getDisplayName(displays[i], screen);
+        if (!name) {
+            _glfwInputError(GLFW_PLATFORM_ERROR,
+                "Failed to get name for display, using generic name");
+            name = _glfw_strdup("Display with no name");
+        }
 
         _GLFWmonitor* monitor = _glfwAllocMonitor(name, (int)size.width, (int)size.height);
         monitor->ns.displayID  = displays[i];
         monitor->ns.unitNumber = unitNumber;
-        createDisplayLink(monitor->ns.displayID);
+        monitor->ns.screen     = screen;
+        _glfw_create_display_link(monitor->ns.displayID);
 
         free(name);
 
@@ -554,15 +598,16 @@ GLFWvidmode* _glfwPlatformGetVideoModes(_GLFWmonitor* monitor, int* count)
 
         const GLFWvidmode mode =
             vidmodeFromCGDisplayMode(dm, monitor->ns.fallbackRefreshRate);
+        CFIndex j;
 
-        for (CFIndex j = 0;  j < *count;  j++)
+        for (j = 0;  j < *count;  j++)
         {
             if (_glfwCompareVideoModes(result + j, &mode) == 0)
                 break;
         }
 
         // Skip duplicate modes
-        if (i < *count)
+        if (j < *count)
             continue;
 
         (*count)++;
@@ -573,11 +618,16 @@ GLFWvidmode* _glfwPlatformGetVideoModes(_GLFWmonitor* monitor, int* count)
     return result;
 }
 
-void _glfwPlatformGetVideoMode(_GLFWmonitor* monitor, GLFWvidmode *mode)
+bool _glfwPlatformGetVideoMode(_GLFWmonitor* monitor, GLFWvidmode *mode)
 {
     CGDisplayModeRef native = CGDisplayCopyDisplayMode(monitor->ns.displayID);
+    if (!native) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Cocoa: Failed to query display mode");
+        return false;
+    }
     *mode = vidmodeFromCGDisplayMode(native, monitor->ns.fallbackRefreshRate);
     CGDisplayModeRelease(native);
+    return true;
 }
 
 bool _glfwPlatformGetGammaRamp(_GLFWmonitor* monitor, GLFWgammaramp* ramp)

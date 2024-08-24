@@ -1,221 +1,235 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
-import os
-import re
-import shlex
-import subprocess
 import sys
-from contextlib import suppress
-from typing import List, NoReturn, Optional, Set, Tuple
+from typing import List, Optional
 
-from kitty.utils import SSHConnectionData
+from kitty.conf.types import Definition
+from kitty.types import run_once
 
-SHELL_SCRIPT = '''\
-#!/bin/sh
-# macOS ships with an ancient version of tic that cannot read from stdin, so we
-# create a temp file for it
-tmp=$(mktemp)
-cat >$tmp << 'TERMEOF'
-TERMINFO
-TERMEOF
+copy_message = '''\
+Copy files and directories from local to remote hosts. The specified files are
+assumed to be relative to the HOME directory and copied to the HOME on the
+remote. Directories are copied recursively. If absolute paths are used, they are
+copied as is.'''
 
-tic_out=$(tic -x -o ~/.terminfo $tmp 2>&1)
-rc=$?
-rm $tmp
-if [ "$rc" != "0" ]; then echo "$tic_out"; exit 1; fi
-if [ -z "$USER" ]; then export USER=$(whoami); fi
-shell_name=$(basename $0)
-EXEC_CMD
 
-# We need to pass the first argument to the executed program with a leading -
-# to make sure the shell executes as a login shell. Note that not all shells
-# support exec -a so we use the below to try to detect such shells
+@run_once
+def option_text() -> str:
+    return '''
+--glob
+type=bool-set
+Interpret file arguments as glob patterns. Globbing is based on
+standard wildcards with the addition that ``/**/`` matches any number of directories.
+See the :link:`detailed syntax <https://github.com/bmatcuk/doublestar#patterns>`.
 
-case "dash" in
-    *$shell_name*)
-        python=$(command -v python3)
-        if [ -z "$python" ]; then python=$(command -v python2); fi
-        if [ -z "$python" ]; then python=python; fi
-        exec $python -c "import os; os.execlp('$0', '-' '$shell_name')"
-    ;;
-esac
-exec -a "-$shell_name" "$0"
+
+--dest
+The destination on the remote host to copy to. Relative paths are resolved
+relative to HOME on the remote host. When this option is not specified, the
+local file path is used as the remote destination (with the HOME directory
+getting automatically replaced by the remote HOME). Note that environment
+variables and ~ are not expanded.
+
+
+--exclude
+type=list
+A glob pattern. Files with names matching this pattern are excluded from being
+transferred. Only used when copying directories. Can
+be specified multiple times, if any of the patterns match the file will be
+excluded. If the pattern includes a :code:`/` then it will match against the full
+path, not just the filename. In such patterns you can use :code:`/**/` to match zero
+or more directories. For example, to exclude a directory and everything under it use
+:code:`**/directory_name`.
+See the :link:`detailed syntax <https://github.com/bmatcuk/doublestar#patterns>` for
+how wildcards match.
+
+
+--symlink-strategy
+default=preserve
+choices=preserve,resolve,keep-path
+Control what happens if the specified path is a symlink. The default is to preserve
+the symlink, re-creating it on the remote machine. Setting this to :code:`resolve`
+will cause the symlink to be followed and its target used as the file/directory to copy.
+The value of :code:`keep-path` is the same as :code:`resolve` except that the remote
+file path is derived from the symlink's path instead of the path of the symlink's target.
+Note that this option does not apply to symlinks encountered while recursively copying directories,
+those are always preserved.
 '''
 
 
-PYTHON_SCRIPT = '''\
-#!/usr/bin/env python
-from __future__ import print_function
-from tempfile import NamedTemporaryFile
-import subprocess, os, sys, pwd, binascii, json
 
-# macOS ships with an ancient version of tic that cannot read from stdin, so we
-# create a temp file for it
-with NamedTemporaryFile() as tmp:
-    tmp.write(binascii.unhexlify('{terminfo}'))
-    p = subprocess.Popen(['tic', '-x', '-o', os.path.expanduser('~/.terminfo'), tmp.name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = p.communicate()
-    if p.wait() != 0:
-        getattr(sys.stderr, 'buffer', sys.stderr).write(stdout + stderr)
-        raise SystemExit('Failed to compile terminfo using tic')
-command_to_execute = json.loads(binascii.unhexlify('{command_to_execute}'))
-try:
-    shell_path = pwd.getpwuid(os.geteuid()).pw_shell or '/bin/sh'
-except KeyError:
-    shell_path = '/bin/sh'
-shell_name = '-' + os.path.basename(shell_path)
-if command_to_execute:
-    os.execlp(shell_path, shell_path, '-c', command_to_execute)
-os.execlp(shell_path, shell_name)
-'''
+definition = Definition(
+    '!kittens.ssh',
+)
+
+agr = definition.add_group
+egr = definition.end_group
+opt = definition.add_option
+
+agr('bootstrap', 'Host bootstrap configuration')  # {{{
+
+opt('hostname', '*', long_text='''
+The hostname that the following options apply to. A glob pattern to match
+multiple hosts can be used. Multiple hostnames can also be specified, separated
+by spaces. The hostname can include an optional username in the form
+:code:`user@host`. When not specified options apply to all hosts, until the
+first hostname specification is found. Note that matching of hostname is done
+against the name you specify on the command line to connect to the remote host.
+If you wish to include the same basic configuration for many different hosts,
+you can do so with the :ref:`include <include>` directive. In version 0.28.0
+the behavior of this option was changed slightly, now, when a hostname is encountered
+all its config values are set to defaults instead of being inherited from a previous
+matching hostname block. In particular it means hostnames dont inherit configurations,
+thereby avoiding hard to understand action-at-a-distance.
+''')
+
+opt('interpreter', 'sh', long_text='''
+The interpreter to use on the remote host. Must be either a POSIX complaint
+shell or a :program:`python` executable. If the default :program:`sh` is not
+available or broken, using an alternate interpreter can be useful.
+''')
+
+opt('remote_dir', '.local/share/kitty-ssh-kitten', long_text='''
+The location on the remote host where the files needed for this kitten are
+installed. Relative paths are resolved with respect to :code:`$HOME`.
+''')
+
+opt('+copy', '', add_to_default=False, ctype='CopyInstruction', long_text=f'''
+{copy_message} For example::
+
+    copy .vimrc .zshrc .config/some-dir
+
+Use :code:`--dest` to copy a file to some other destination on the remote host::
+
+    copy --dest some-other-name some-file
+
+Glob patterns can be specified to copy multiple files, with :code:`--glob`::
+
+    copy --glob images/*.png
+
+Files can be excluded when copying with :code:`--exclude`::
+
+    copy --glob --exclude *.jpg --exclude *.bmp images/*
+
+Files whose remote name matches the exclude pattern will not be copied.
+For more details, see :ref:`ssh_copy_command`.
+''')
+egr()  # }}}
+
+agr('shell', 'Login shell environment')  # {{{
+
+opt('shell_integration', 'inherited', long_text='''
+Control the shell integration on the remote host. See :ref:`shell_integration`
+for details on how this setting works. The special value :code:`inherited` means
+use the setting from :file:`kitty.conf`. This setting is useful for overriding
+integration on a per-host basis.
+''')
+
+opt('login_shell', '', long_text='''
+The login shell to execute on the remote host. By default, the remote user
+account's login shell is used.
+''')
+
+opt('+env', '', add_to_default=False, ctype='EnvInstruction', long_text='''
+Specify the environment variables to be set on the remote host. Using the
+name with an equal sign (e.g. :code:`env VAR=`) will set it to the empty string.
+Specifying only the name (e.g. :code:`env VAR`) will remove the variable from
+the remote shell environment. The special value :code:`_kitty_copy_env_var_`
+will cause the value of the variable to be copied from the local environment.
+The definitions are processed alphabetically. Note that environment variables
+are expanded recursively, for example::
+
+    env VAR1=a
+    env VAR2=${HOME}/${VAR1}/b
+
+The value of :code:`VAR2` will be :code:`<path to home directory>/a/b`.
+''')
+
+opt('cwd', '', long_text='''
+The working directory on the remote host to change to. Environment variables in
+this value are expanded. The default is empty so no changing is done, which
+usually means the HOME directory is used.
+''')
+
+opt('color_scheme', '', long_text='''
+Specify a color scheme to use when connecting to the remote host. If this option
+ends with :code:`.conf`, it is assumed to be the name of a config file to load
+from the kitty config directory, otherwise it is assumed to be the name of a
+color theme to load via the :doc:`themes kitten </kittens/themes>`. Note that
+only colors applying to the text/background are changed, other config settings
+in the .conf files/themes are ignored.
+''')
+
+opt('remote_kitty', 'if-needed', choices=('if-needed', 'no', 'yes'), long_text='''
+Make :program:`kitten` available on the remote host. Useful to run kittens such
+as the :doc:`icat kitten </kittens/icat>` to display images or the
+:doc:`transfer file kitten </kittens/transfer>` to transfer files. Only works if
+the remote host has an architecture for which :link:`pre-compiled kitten binaries
+<https://github.com/kovidgoyal/kitty/releases>` are available. Note that kitten
+is not actually copied to the remote host, instead a small bootstrap script is
+copied which will download and run kitten when kitten is first executed on the
+remote host. A value of :code:`if-needed` means kitten is installed only if not
+already present in the system-wide PATH. A value of :code:`yes` means that kitten
+is installed even if already present, and the installed kitten takes precedence.
+Finally, :code:`no` means no kitten is installed on the remote host. The
+installed kitten can be updated by running: :code:`kitten update-self` on the
+remote host.
+''')
+egr()  # }}}
+
+agr('ssh', 'SSH configuration')  # {{{
+
+opt('share_connections', 'yes', option_type='to_bool', long_text='''
+Within a single kitty instance, all connections to a particular server can be
+shared. This reduces startup latency for subsequent connections and means that
+you have to enter the password only once. Under the hood, it uses SSH
+ControlMasters and these are automatically cleaned up by kitty when it quits.
+You can map a shortcut to :ac:`close_shared_ssh_connections` to disconnect all
+active shared connections.
+''')
+
+opt('askpass', 'unless-set', choices=('unless-set', 'ssh', 'native'), long_text='''
+Control the program SSH uses to ask for passwords or confirmation of host keys
+etc. The default is to use kitty's native :program:`askpass`, unless the
+:envvar:`SSH_ASKPASS` environment variable is set. Set this option to
+:code:`ssh` to not interfere with the normal ssh askpass mechanism at all, which
+typically means that ssh will prompt at the terminal. Set it to :code:`native`
+to always use kitty's native, built-in askpass implementation. Note that not
+using the kitty askpass implementation means that SSH might need to use the
+terminal before the connection is established, so the kitten cannot use the
+terminal to send data without an extra roundtrip, adding to initial connection
+latency.
+''')
+
+opt('delegate', '', long_text='''
+Do not use the SSH kitten for this host. Instead run the command specified as the delegate.
+For example using :code:`delegate ssh` will run the ssh command with all arguments passed
+to the kitten, except kitten specific ones. This is useful if some hosts are not capable
+of supporting the ssh kitten.
+''')
+
+opt('forward_remote_control', 'no', option_type='to_bool', long_text='''
+Forward the kitty remote control socket to the remote host. This allows using the kitty
+remote control facilities from the remote host. WARNING: This allows any software
+on the remote host full access to the local computer, so only do it for trusted remote hosts.
+Note that this does not work with abstract UNIX sockets such as :file:`@mykitty` because of SSH limitations.
+This option uses SSH socket forwarding to forward the socket pointed to by the :envvar:`KITTY_LISTEN_ON`
+environment variable.
+''')
+
+egr()  # }}}
 
 
-def get_ssh_cli() -> Tuple[Set[str], Set[str]]:
-    other_ssh_args: List[str] = []
-    boolean_ssh_args: List[str] = []
-    stderr = subprocess.Popen(['ssh'], stderr=subprocess.PIPE).stderr
-    assert stderr is not None
-    raw = stderr.read().decode('utf-8')
-    for m in re.finditer(r'\[(.+?)\]', raw):
-        q = m.group(1)
-        if len(q) < 2 or q[0] != '-':
-            continue
-        if ' ' in q:
-            other_ssh_args.append(q[1])
-        else:
-            boolean_ssh_args.extend(q[1:])
-    return set('-' + x for x in boolean_ssh_args), set('-' + x for x in other_ssh_args)
-
-
-def get_connection_data(args: List[str]) -> Optional[SSHConnectionData]:
-    boolean_ssh_args, other_ssh_args = get_ssh_cli()
-    found_ssh = ''
-    port: Optional[int] = None
-    expecting_port = False
-    expecting_option_val = False
-
-    for i, arg in enumerate(args):
-        if not found_ssh:
-            if os.path.basename(arg).lower() in ('ssh', 'ssh.exe'):
-                found_ssh = arg
-            continue
-        if arg.startswith('-') and not expecting_option_val:
-            if arg in boolean_ssh_args:
-                continue
-            if arg.startswith('-p'):
-                if arg[2:].isdigit():
-                    with suppress(Exception):
-                        port = int(arg[2:])
-                elif arg == '-p':
-                    expecting_port = True
-            expecting_option_val = True
-            continue
-
-        if expecting_option_val:
-            if expecting_port:
-                with suppress(Exception):
-                    port = int(arg)
-                expecting_port = False
-            expecting_option_val = False
-            continue
-
-        return SSHConnectionData(found_ssh, arg, port)
-
-
-def parse_ssh_args(args: List[str]) -> Tuple[List[str], List[str], bool]:
-    boolean_ssh_args, other_ssh_args = get_ssh_cli()
-    passthrough_args = {'-' + x for x in 'Nnf'}
-    ssh_args = []
-    server_args: List[str] = []
-    expecting_option_val = False
-    passthrough = False
-    for arg in args:
-        if len(server_args) > 1:
-            server_args.append(arg)
-            continue
-        if arg.startswith('-') and not expecting_option_val:
-            all_args = arg[1:]
-            for i, arg in enumerate(all_args):
-                arg = '-' + arg
-                if arg in passthrough_args:
-                    passthrough = True
-                if arg in boolean_ssh_args:
-                    ssh_args.append(arg)
-                    continue
-                if arg in other_ssh_args:
-                    ssh_args.append(arg)
-                    rest = all_args[i+1:]
-                    if rest:
-                        ssh_args.append(rest)
-                    else:
-                        expecting_option_val = True
-                    break
-                raise SystemExit('Unknown option: {}'.format(arg))
-            continue
-        if expecting_option_val:
-            ssh_args.append(arg)
-            expecting_option_val = False
-            continue
-        server_args.append(arg)
-    if not server_args:
-        raise SystemExit('Must specify server to connect to')
-    return ssh_args, server_args, passthrough
-
-
-def quote(x: str) -> str:
-    # we have to escape unbalanced quotes and other unparsable
-    # args as they will break the shell script
-    # But we do not want to quote things like * or 'echo hello'
-    # See https://github.com/kovidgoyal/kitty/issues/1787
-    try:
-        shlex.split(x)
-    except ValueError:
-        x = shlex.quote(x)
-    return x
-
-
-def get_posix_cmd(terminfo: str, remote_args: List[str]) -> List[str]:
-    sh_script = SHELL_SCRIPT.replace('TERMINFO', terminfo, 1)
-    command_to_execute = ''
-    if remote_args:
-        # ssh simply concatenates multiple commands using a space see
-        # line 1129 of ssh.c and on the remote side sshd.c runs the
-        # concatenated command as shell -c cmd
-        args = [c.replace("'", """'"'"'""") for c in remote_args]
-        command_to_execute = "exec $0 -c '{}'".format(' '.join(args))
-    sh_script = sh_script.replace('EXEC_CMD', command_to_execute)
-    return [sh_script] + remote_args
-
-
-def get_python_cmd(terminfo: str, command_to_execute: List[str]) -> List[str]:
-    import json
-    script = PYTHON_SCRIPT.format(
-        terminfo=terminfo.encode('utf-8').hex(),
-        command_to_execute=json.dumps(' '.join(command_to_execute)).encode('utf-8').hex()
-    )
-    return [f'python -c "{script}"']
-
-
-def main(args: List[str]) -> NoReturn:
-    args = args[1:]
-    use_posix = True
-    if args and args[0] == 'use-python':
-        args = args[1:]
-        use_posix = False
-    ssh_args, server_args, passthrough = parse_ssh_args(args)
-    cmd = ['ssh'] + ssh_args
-    if passthrough:
-        cmd += server_args
-    else:
-        hostname, remote_args = server_args[0], server_args[1:]
-        cmd += ['-t', hostname]
-        terminfo = subprocess.check_output(['infocmp']).decode('utf-8')
-        f = get_posix_cmd if use_posix else get_python_cmd
-        cmd += f(terminfo, remote_args)
-    os.execvp('ssh', cmd)
-
+def main(args: List[str]) -> Optional[str]:
+    raise SystemExit('This should be run as kitten ssh')
 
 if __name__ == '__main__':
-    main(sys.argv)
+    main([])
+elif __name__ == '__wrapper_of__':
+    cd = getattr(sys, 'cli_docs')
+    cd['wrapper_of'] = 'ssh'
+elif __name__ == '__conf__':
+    setattr(sys, 'options_definition', definition)
+elif __name__ == '__extra_cli_parsers__':
+    setattr(sys, 'extra_cli_parsers', {'copy': option_text()})

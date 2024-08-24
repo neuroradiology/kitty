@@ -1,23 +1,28 @@
-#!/usr/bin/env python3
-# vim:fileencoding=utf-8
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+from collections.abc import Iterable, Sequence
 from enum import IntFlag
-from itertools import chain
-from typing import Sequence, Tuple
+from typing import NamedTuple
 
-from .fast_data_types import (
-    BORDERS_PROGRAM, add_borders_rect, compile_program, get_options,
-    init_borders_program, os_window_has_background_image
-)
+from .fast_data_types import BORDERS_PROGRAM, add_borders_rect, get_options, init_borders_program, os_window_has_background_image
+from .shaders import program_for
 from .typing import LayoutType
-from .utils import load_shaders
+from .utils import color_as_int
 from .window_list import WindowGroup, WindowList
 
 
 class BorderColor(IntFlag):
-    # See the border vertex shader for how these flags become actual colors
-    default_bg, active, inactive, window_bg, bell = ((1 << i) for i in range(5))
+    # These are indices into the array of colors in the border vertex shader
+    default_bg, active, inactive, window_bg, bell, tab_bar_bg, tab_bar_margin_color, tab_bar_left_edge_color, tab_bar_right_edge_color = range(9)
+
+
+class Border(NamedTuple):
+    left: int
+    top: int
+    right: int
+    bottom: int
+    color: BorderColor
 
 
 def vertical_edge(os_window_id: int, tab_id: int, color: int, width: int, top: int, bottom: int, left: int) -> None:
@@ -58,7 +63,7 @@ def draw_edges(os_window_id: int, tab_id: int, colors: Sequence[int], wg: Window
 
 
 def load_borders_program() -> None:
-    compile_program(BORDERS_PROGRAM, *load_shaders('border'))
+    program_for('border').compile(BORDERS_PROGRAM)
     init_borders_program()
 
 
@@ -72,7 +77,7 @@ class Borders:
         self,
         all_windows: WindowList,
         current_layout: LayoutType,
-        extra_blank_rects: Sequence[Tuple[int, int, int, int]],
+        tab_bar_rects: Iterable[Border],
         draw_window_borders: bool = True,
     ) -> None:
         opts = get_options()
@@ -80,10 +85,11 @@ class Borders:
         draw_minimal_borders = opts.draw_minimal_borders and max(opts.window_margin_width) < 1
         add_borders_rect(self.os_window_id, self.tab_id, 0, 0, 0, 0, BorderColor.default_bg)
         has_background_image = os_window_has_background_image(self.os_window_id)
-        if not has_background_image:
-            for br in chain(current_layout.blank_rects, extra_blank_rects):
-                left, top, right, bottom = br
-                add_borders_rect(self.os_window_id, self.tab_id, left, top, right, bottom, BorderColor.default_bg)
+        if not has_background_image or opts.background_tint > 0.0:
+            for br in current_layout.blank_rects:
+                add_borders_rect(self.os_window_id, self.tab_id, *br, BorderColor.default_bg)
+            for tbr in tab_bar_rects:
+                add_borders_rect(self.os_window_id, self.tab_id, *tbr)
         bw = 0
         groups = tuple(all_windows.iter_all_layoutable_groups(only_visible=True))
         if groups:
@@ -92,7 +98,7 @@ class Borders:
         active_group = all_windows.active_group
 
         for i, wg in enumerate(groups):
-            window_bg = wg.default_bg
+            window_bg = color_as_int(wg.default_bg)
             window_bg = (window_bg << 8) | BorderColor.window_bg
             if draw_borders and not draw_minimal_borders:
                 # Draw the border rectangles

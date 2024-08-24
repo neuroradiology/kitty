@@ -1,5 +1,5 @@
-A protocol for comprehensive keyboard handling in terminals
-=================================================================
+Comprehensive keyboard handling in terminals
+==============================================
 
 There are various problems with the current state of keyboard handling in
 terminals. They include:
@@ -28,9 +28,40 @@ issues in that proposal, listed at the :ref:`bottom of this document
 
 You can see this protocol with all enhancements in action by running::
 
-    kitty +kitten show_key -m kitty
+    kitten show-key -m kitty
 
 inside the kitty terminal to report key events.
+
+In addition to kitty, this protocol is also implemented in:
+
+* The `foot terminal <https://codeberg.org/dnkl/foot/issues/319>`__
+* The `WezTerm terminal <https://wezfurlong.org/wezterm/config/lua/config/enable_kitty_keyboard.html>`__
+* The `alacritty terminal <https://github.com/alacritty/alacritty/pull/7125>`__
+* The `rio terminal <https://github.com/raphamorim/rio/commit/cd463ca37677a0fc48daa8795ea46dadc92b1e95>`__
+
+Libraries implementing this protocol:
+
+* The `notcurses library <https://github.com/dankamongmen/notcurses/issues/2131>`__
+* The `crossterm library <https://github.com/crossterm-rs/crossterm/pull/688>`__
+* The `textual library <https://github.com/Textualize/textual/pull/4631>`__
+
+Programs implementing this protocol:
+
+* The `Vim text editor <https://github.com/vim/vim/commit/63a2e360cca2c70ab0a85d14771d3259d4b3aafa>`__
+* The `Emacs text editor via the kkp package <https://github.com/benjaminor/kkp>`__
+* The `Neovim text editor <https://github.com/neovim/neovim/pull/18181>`__
+* The `kakoune text editor <https://github.com/mawww/kakoune/issues/4103>`__
+* The `dte text editor <https://gitlab.com/craigbarnes/dte/-/issues/138>`__
+* The `Helix text editor <https://github.com/helix-editor/helix/pull/4939>`__
+* The `far2l file manager <https://github.com/elfmz/far2l/commit/e1f2ee0ef2b8332e5fa3ad7f2e4afefe7c96fc3b>`__
+* The `Yazi file manager <https://github.com/sxyazi/yazi>`__
+* The `awrit web browser <https://github.com/chase/awrit>`__
+* The `Turbo Vision <https://github.com/magiblot/tvision/commit/6e5a7b46c6634079feb2ac98f0b890bbed59f1ba>`/`Free Vision <https://gitlab.com/freepascal.org/fpc/source/-/issues/40673#note_2061428120>`__ IDEs
+
+Shells implementing this protocol:
+
+* The `nushell shell <https://github.com/nushell/nushell/pull/10540>`__
+* The `fish shell <https://github.com/fish-shell/fish-shell/commit/8bf8b10f685d964101f491b9cc3da04117a308b4>`__
 
 .. versionadded:: 0.20.0
 
@@ -41,19 +72,21 @@ If you are an application or library developer just interested in using this
 protocol to make keyboard handling simpler and more robust in your application,
 without too many changes, do the following:
 
-#. Emit the escape code ``CSI > 1 u`` at application startup or when entering
-   alternate screen mode
+#. Emit the escape code ``CSI > 1 u`` at application startup if using the main
+   screen or when entering alternate screen mode, if using the alternate
+   screen.
 #. All key events will now be sent in only a few forms to your application,
    that are easy to parse unambiguously.
-#. Emit the escape sequence ``CSI < u`` at application exit or just before
-   leaving alternate screen mode to restore the previously used keyboard mode.
+#. Emit the escape sequence ``CSI < u`` at application exit if using the main
+   screen or just before leaving alternate screen mode if using the alternate screen,
+   to restore whatever the keyboard mode was before step 1.
 
 Key events will all be delivered to your application either as plain UTF-8
 text, or using the following escape codes, for those keys that do not produce
 text (``CSI`` is the bytes ``0x1b 0x5b``)::
 
     CSI number ; modifiers [u~]
-    CSI 1; modifiers [ABCDEFHPQRS]
+    CSI 1; modifiers [ABCDEFHPQS]
     0x0d - for the Enter key
     0x7f or 0x08 - for Backspace
     0x09 - for Tab
@@ -61,13 +94,14 @@ text (``CSI`` is the bytes ``0x1b 0x5b``)::
 The ``number`` in the first form above will be either the Unicode codepoint for a
 key, such as ``97`` for the :kbd:`a` key, or one of the numbers from the
 :ref:`functional` table below. The ``modifiers`` optional parameter encodes any
-modifiers pressed for the key event. The encoding is described in the
+modifiers active for the key event. The encoding is described in the
 :ref:`modifiers` section.
 
-The second form is used for a few functional keys, such as the :kbd:`Home, End,
-Arrow keys and F1-F4`, they are enumerated in the :ref:`functional` table below.
-Note that if no modifiers are present the parameters are omitted entirely
-giving an escape code of the form ``CSI [ABCDEFHPQRS]``.
+The second form is used for a few functional keys, such as the :kbd:`Home`,
+:kbd:`End`, :kbd:`Arrow` keys and :kbd:`F1` ... :kbd:`F4`, they are enumerated in
+the :ref:`functional` table below.  Note that if no modifiers are present the
+parameters are omitted entirely giving an escape code of the form ``CSI
+[ABCDEFHPQS]``.
 
 If you want support for more advanced features such as repeat and release
 events, alternate keys for shortcut matching et cetera, these can be turned on
@@ -82,9 +116,7 @@ do not. When a key event produces text, the text is sent directly as UTF-8
 encoded bytes. This is safe as UTF-8 contains no C0 control codes.
 When the key event does not have text, the key event is encoded as an escape code. In
 legacy compatibility mode (the default) this uses legacy escape codes, so old terminal
-applications continue to work. Key events that could not be represented in
-legacy mode are encoded using a ``CSI u`` escape code, that most terminal
-programs should just ignore. For more advanced features, such as release/repeat
+applications continue to work. For more advanced features, such as release/repeat
 reporting etc., applications can tell the terminal they want this information by
 sending an escape code to :ref:`progressively enhance <progressive_enhancement>` the data reported for
 key events.
@@ -140,11 +172,13 @@ sub-field for the shifted key, like this::
 Modifiers
 ~~~~~~~~~~~~~~
 
-This protocol supports six modifier keys, :kbd:`shift, alt, ctrl, super, hyper
-and meta` as well as :kbd:`num_lock and caps_lock`. Here :kbd:`super` is either
-the *Windows/Linux* key or the *Cmd* key on mac keyboards. :kbd:`hyper` and
-:kbd:`meta` are typically present only on X11 based systems with special XKB
-rules. Modifiers are encoded as a bit field with::
+This protocol supports six modifier keys, :kbd:`shift`, :kbd:`alt`,
+:kbd:`ctrl`, :kbd:`super`, :kbd:`hyper`, :kbd:`meta`, :kbd:`num_lock` and
+:kbd:`caps_lock`. Here :kbd:`super` is either the *Windows/Linux* key or the
+:kbd:`command` key on mac keyboards. The :kbd:`alt` key is the :kbd:`option`
+key on mac keyboards. :kbd:`hyper` and :kbd:`meta` are typically present only
+on X11/Wayland based systems with special XKB rules. Modifiers are encoded as a
+bit field with::
 
     shift     0b1         (1)
     alt       0b10        (2)
@@ -156,11 +190,19 @@ rules. Modifiers are encoded as a bit field with::
     num_lock  0b10000000  (128)
 
 In the escape code, the modifier value is encoded as a decimal number which is
-``1 + actual modifiers``. So to represent :kbd:`shift` only, the value would be ``1 +
-1 = 2``, to represent :kbd:`ctrl+shift` the value would be ``1 + 0b101 = 6``
-and so on. If the modifier field is not present in the escape code, its default
-value is ``1`` which means no modifiers.
+``1 + actual modifiers``. So to represent :kbd:`shift` only, the value would be
+``1 + 1 = 2``, to represent :kbd:`ctrl+shift` the value would be ``1 + 0b101 =
+6`` and so on. If the modifier field is not present in the escape code, its
+default value is ``1`` which means no modifiers. If a modifier is *active* when
+the key event occurs, i.e. if the key is pressed or the lock (for caps lock/num
+lock) is enabled, the key event must have the bit for that modifier set.
 
+When the key event is related to an actual modifier key, the corresponding
+modifier's bit must be set to the modifier state including the effect for the
+current event. For example, when pressing the :kbd:`LEFT_CONTROL` key, the
+``ctrl`` bit must be set and when releasing it, it must be reset. When both
+left and right control keys are pressed and one is released, the release event
+must have the ``ctrl`` bit set. See :iss:`6913` for discussion of this design.
 
 .. _event_types:
 
@@ -198,8 +240,10 @@ enhancement <progressive_enhancement>` mechanism described below. Some examples:
     shift+a -> CSI 97 ; 2 ; 65 u  # The text 'A' is reported as 65
     option+a -> CSI 97 ; ; 229 u  # The text 'å' is reported as 229
 
-If multiple code points are present, they must be separated by colons.
-If no known key is associated with the text the key number ``0`` must be used.
+If multiple code points are present, they must be separated by colons.  If no
+known key is associated with the text the key number ``0`` must be used. The
+associated text must not contain control codes (control codes are code points
+below U+0020 and codepoints in the C0 and C1 blocks).
 
 
 Non-Unicode keys
@@ -207,9 +251,9 @@ Non-Unicode keys
 
 There are many keys that don't correspond to letters from human languages, and
 thus aren't represented in Unicode. Think of functional keys, such as
-:kbd:`Escape, Play, Pause, F1, Home, etc`. These are encoded using Unicode code
-points from the Private Use Area (``57344 - 63743``). The mapping of key
-names to code points for these keys is in the
+:kbd:`Escape`, :kbd:`Play`, :kbd:`Pause`, :kbd:`F1`, :kbd:`Home`, etc. These
+are encoded using Unicode code points from the Private Use Area (``57344 -
+63743``). The mapping of key names to code points for these keys is in the
 :ref:`Functional key definition table below <functional>`.
 
 
@@ -257,7 +301,7 @@ The terminal will reply with::
 The program can also push/pop the current flags onto a stack in the
 terminal with::
 
-    CSI > flags u  # for push, if flags ommitted default to zero
+    CSI > flags u  # for push, if flags omitted default to zero
     CSI < number u # to pop number entries, defaulting to 1 if unspecified
 
 Terminals should limit the size of the stack as appropriate, to prevent
@@ -266,10 +310,14 @@ and alternate screens. If a pop request is received that empties the stack,
 all flags are reset. If a push request is received and the stack is full, the
 oldest entry from the stack must be evicted.
 
-.. note:: In the interests of interoperation, the XTerm specific sequences
-   `CSI > 4; 1 m` and `CSI > 4; 0 m` are treated as `CSI > 1 u` and `CSI < 1 u`.
-   These codes cause XTerm to use the CSI u encoding for more keys and are therefore
-   treated as similar to the disambiguate progressive enhancement.
+.. note:: The main and alternate screens in the terminal emulator must maintain
+   their own, independent, keyboard mode stacks. This is so that a program that
+   uses the alternate screen such as an editor, can change the keyboard mode
+   in the alternate screen only, without affecting the mode in the main screen
+   or even knowing what that mode is. Without this, and if no stack is
+   implemented for keyboard modes (such as in some legacy terminal emulators)
+   the editor would have to somehow know what the keyboard mode of the main
+   screen is and restore to that mode on exit.
 
 .. _disambiguate:
 
@@ -282,8 +330,8 @@ encodings overlapping with other control codes. For instance, pressing the
 start of an escape code. Similarly pressing the key :kbd:`alt+[` will generate
 the bytes used for CSI control codes.
 
-Turning on this flag will cause the terminal to report the :kbd:`Esc, alt+key,
-ctrl+key, ctrl+alt+key, shift+alt+key` keys using ``CSI u`` sequences instead
+Turning on this flag will cause the terminal to report the :kbd:`Esc`, :kbd:`alt+key`,
+:kbd:`ctrl+key`, :kbd:`ctrl+alt+key`, :kbd:`shift+alt+key` keys using ``CSI u`` sequences instead
 of legacy ones. Here key is any ASCII key as described in :ref:`legacy_text`.
 Additionally, all keypad keys will be reported as separate keys with ``CSI u``
 encoding, using dedicated numbers from the :ref:`table below <functional>`.
@@ -292,16 +340,18 @@ With this flag turned on, all key events that do not generate text are
 represented in one of the following two forms::
 
     CSI number; modifier u
-    CSI 1; modifier [~ABCDEFHPQRS]
+    CSI 1; modifier [~ABCDEFHPQS]
 
 This makes it very easy to parse key events in an application. In particular,
 :kbd:`ctrl+c` will no longer generate the ``SIGINT`` signal, but instead be
 delivered as a ``CSI u`` escape code. This has the nice side effect of making it
 much easier to integrate into the application event loop. The only exceptions
-are the :kbd:`Enter, Tab and Backspace` keys which still generate the same
+are the :kbd:`Enter`, :kbd:`Tab` and :kbd:`Backspace` keys which still generate the same
 bytes as in legacy mode this is to allow the user to type and execute commands
 in the shell such as ``reset`` after a program that sets this mode crashes
-without clearing it.
+without clearing it. Note that the Lock modifiers are not reported for text
+producing keys, to keep them useable in legacy programs. To get lock modifiers
+for all keys use the :ref:`report_all_keys` enhancement.
 
 .. _report_events:
 
@@ -312,6 +362,13 @@ This progressive enhancement (``0b10``) causes the terminal to report key repeat
 and key release events. Normally only key press events are reported and key
 repeat events are treated as key press events. See :ref:`event_types` for
 details on how these are reported.
+
+.. note::
+
+   The :kbd:`Enter`, :kbd:`Tab` and :kbd:`Backspace` keys will not have release
+   events unless :ref:`report_all_keys` is also set, so that the user can still
+   type reset at a shell prompt when a program that sets this mode ends without
+   resetting it.
 
 .. _report_alternates:
 
@@ -338,8 +395,8 @@ only key events are sent. If the text is needed as well, combine with the
 Report associated text enhancement below.
 
 Additionally, with this mode, events for pressing modifier keys are reported.
-Note that *all* keys are reported as escape codes, including :kbd:`Enter, Tab,
-Backspace` etc.
+Note that *all* keys are reported as escape codes, including :kbd:`Enter`,
+:kbd:`Tab`, :kbd:`Backspace` etc.
 
 .. _report_text:
 
@@ -360,7 +417,7 @@ An application can query the terminal for support of this protocol by sending
 the escape code querying for the :ref:`current progressive enhancement
 <progressive_enhancement>` status
 followed by request for the `primary device attributes
-<https://vt100.net/docs/vt510-rm/DA1.html>`. If an answer for the device
+<https://vt100.net/docs/vt510-rm/DA1.html>`__. If an answer for the device
 attributes is received without getting back an answer for the progressive
 enhancement the terminal does not support this protocol.
 
@@ -383,7 +440,7 @@ Legacy functional keys
 These keys are encoded using three schemes::
 
     CSI number ; modifier ~
-    CSI 1 ; modifier {ABCDEFHPQRS}
+    CSI 1 ; modifier {ABCDEFHPQS}
     SS3 {ABCDEFHPQRS}
 
 In the above, if there are no modifiers, the modifier parameter is omitted.
@@ -425,6 +482,7 @@ mode* (the ``smkx/rmkx`` terminfo capabilities). This form is used only in
     "F10",       "kf10",       "CSI 21 ~"
     "F11",       "kf11",       "CSI 23 ~"
     "F12",       "kf12",       "CSI 24 ~"
+    "MENU",      "kf16",       "CSI 29 ~"
 
 There are a few more functional keys that have special cased legacy encodings.
 These are present because they are commonly used and for the sake of legacy
@@ -446,15 +504,22 @@ must correspond to the :kbd:`Backspace` key.
 All keypad keys are reported as their equivalent non-keypad keys. To
 distinguish these, use the :ref:`disambiguate <disambiguate>` flag.
 
+Terminals may choose what they want to do about functional keys that have no
+legacy encoding. kitty chooses to encode these using ``CSI u`` encoding even in
+legacy mode, so that they become usable even in programs that do not
+understand the full kitty keyboard protocol. However, terminals may instead choose to
+ignore such keys in legacy mode instead, or have an option to control this behavior.
+
 .. _legacy_text:
 
 Legacy text keys
 ~~~~~~~~~~~~~~~~~~~
 
-For legacy compatibility, the keys
-:kbd:`a-z 0-9 \` - = [ ] \ ; ' , . /` with the modifiers
-:kbd:`shift, alt, ctrl, shift+alt, ctrl+alt` are output using the
-following algorithm:
+For legacy compatibility, the keys :kbd:`a`-:kbd:`z` :kbd:`0`-:kbd:`9`
+:kbd:`\`` :kbd:`-` :kbd:`=` :kbd:`[` :kbd:`]` :kbd:`\\` :kbd:`;` :kbd:`'`
+:kbd:`,` :kbd:`.` :kbd:`/` with the modifiers :kbd:`shift`, :kbd:`alt`,
+:kbd:`ctrl`, :kbd:`shift+alt`, :kbd:`ctrl+alt` are output using the following
+algorithm:
 
 #. If the :kbd:`alt` key is pressed output the byte for ``ESC (0x1b)``
 #. If the :kbd:`ctrl` modifier is pressed map the key using the table
@@ -509,7 +574,7 @@ compatibility reasons.
    "NUM_LOCK", "``57360 u``", "PRINT_SCREEN", "``57361 u``"
    "PAUSE", "``57362 u``", "MENU", "``57363 u``"
    "F1", "``1 P or 11 ~``", "F2", "``1 Q or 12 ~``"
-   "F3", "``1 R or 13 ~``", "F4", "``1 S or 14 ~``"
+   "F3", "``13 ~``", "F4", "``1 S or 14 ~``"
    "F5", "``15 ~``", "F6", "``17 ~``"
    "F7", "``18 ~``", "F8", "``19 ~``"
    "F9", "``20 ~``", "F10", "``21 ~``"
@@ -558,8 +623,14 @@ compatibility reasons.
 .. end functional key table
 .. }}}
 
-Note that the escape codes above of the form ``CSI 1 letter`` will omit the
-``1`` if there are no modifiers, since ``1`` is the default value.
+.. note::
+    The escape codes above of the form ``CSI 1 letter`` will omit the
+    ``1`` if there are no modifiers, since ``1`` is the default value.
+
+.. note::
+   The original version of this specification allowed F3 to be encoded as both
+   CSI R and CSI ~. However, CSI R conflicts with the Cursor Position Report,
+   so it was removed.
 
 .. _ctrl_mapping:
 
@@ -626,8 +697,8 @@ specification.
 * Incorrectly encoding shifted keys when shift modifier is used, for instance,
   for :kbd:`ctrl+shift+i` is encoded as :kbd:`ctrl+I`.
 
-* No way to have non-conflicting escape codes for :kbd:`alt+letter,
-  ctrl+letter, ctrl+alt+letter` key presses
+* No way to have non-conflicting escape codes for :kbd:`alt+letter`,
+  :kbd:`ctrl+letter`, :kbd:`ctrl+alt+letter` key presses
 
 * No way to specify both shifted and unshifted keys for robust shortcut
   matching (think matching :kbd:`ctrl+shift+equal` and :kbd:`ctrl+plus`)
@@ -652,3 +723,31 @@ specification.
 * Handwaves that :kbd:`ctrl` *tends to* mask with ``0x1f``. In actual fact it
   does this only for some keys. The action of :kbd:`ctrl` is not specified and
   varies between terminals, historically because of different keyboard layouts.
+
+
+Why xterm's modifyOtherKeys should not be used
+---------------------------------------------------
+
+* Does not support release events
+
+* Does not fix the issue of :kbd:`Esc` key presses not being distinguishable from
+  escape codes.
+
+* Does not fix the issue of some keypresses generating identical bytes and thus
+  being indistinguishable
+
+* There is no robust way to query it or manage its state from a program running
+  in the terminal.
+
+* No support for shifted keys.
+
+* No support for alternate keyboard layouts.
+
+* No support for modifiers beyond the basic four.
+
+* No support for lock keys like Num lock and Caps lock.
+
+* Is completely unspecified. The most discussion of it available anywhere is
+  `here <https://invisible-island.net/xterm/modified-keys.html>`__
+  And it contains no specification of what numbers to assign to what function
+  keys beyond running a Perl script on an X11 system!!

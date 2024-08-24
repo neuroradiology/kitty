@@ -32,7 +32,6 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#include <limits.h>
 #include <stdio.h>
 
 
@@ -236,10 +235,10 @@ bool _glfwRefreshContextAttribs(_GLFWwindow* window,
         }
     }
 
-    if (!sscanf(version, "%d.%d.%d",
+    if (sscanf(version, "%d.%d.%d",
                 &window->context.major,
                 &window->context.minor,
-                &window->context.revision))
+                &window->context.revision) < 1)
     {
         if (window->context.client == GLFW_OPENGL_API)
         {
@@ -396,15 +395,6 @@ bool _glfwRefreshContextAttribs(_GLFWwindow* window,
             window->context.release = GLFW_RELEASE_BEHAVIOR_FLUSH;
     }
 
-    // Clearing the front buffer to black to avoid garbage pixels left over from
-    // previous uses of our bit of VRAM
-    {
-        PFNGLCLEARPROC glClear = (PFNGLCLEARPROC)
-            window->context.getProcAddress("glClear");
-        glClear(GL_COLOR_BUFFER_BIT);
-        window->context.swapBuffers(window);
-    }
-
     glfwMakeContextCurrent((GLFWwindow*) previous);
     return true;
 }
@@ -444,10 +434,10 @@ bool _glfwStringInExtensionString(const char* string, const char* extensions)
 
 GLFWAPI void glfwMakeContextCurrent(GLFWwindow* handle)
 {
+    _GLFW_REQUIRE_INIT();
+
     _GLFWwindow* window = (_GLFWwindow*) handle;
     _GLFWwindow* previous = _glfwPlatformGetTls(&_glfw.contextSlot);
-
-    _GLFW_REQUIRE_INIT();
 
     if (window && window->context.client == GLFW_NO_API)
     {
@@ -487,6 +477,9 @@ GLFWAPI void glfwSwapBuffers(GLFWwindow* handle)
     }
 
     window->context.swapBuffers(window);
+#ifdef _GLFW_WAYLAND
+    _glfwWaylandAfterBufferSwap(window);
+#endif
 }
 
 GLFWAPI void glfwSwapInterval(int interval)

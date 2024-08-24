@@ -2,24 +2,17 @@
 
 import subprocess
 
-files_to_exclude = '''\
-kitty/wcwidth-std.h
-kitty/charsets.c
-kitty/unicode-data.c
-kitty/key_encoding.py
-kitty/rgb.py
-kitty/gl.h
-kitty/gl-wrapper.h
-kitty/gl-wrapper.c
-kitty/glfw-wrapper.h
-kitty/glfw-wrapper.c
-kitty/emoji.h
-kittens/unicode_input/names.h
-kitty/parse-graphics-command.h
-'''
+ls_files = subprocess.check_output([ 'git', 'ls-files']).decode('utf-8')
+all_files = set(ls_files.splitlines())
+all_files.discard('')
+for attr in ('linguist-generated', 'linguist-vendored'):
+    cp = subprocess.run(['git', 'check-attr', attr, '--stdin'],
+                        check=True, stdout=subprocess.PIPE, input='\n'.join(all_files).encode('utf-8'))
+    for line in cp.stdout.decode().splitlines():
+        if line.endswith(' true'):
+            fname = line.split(':', 1)[0]
+            all_files.discard(fname)
 
-p = subprocess.Popen([
-    'cloc', '--exclude-list-file', '/dev/stdin', 'kitty', 'kittens'
-], stdin=subprocess.PIPE)
-p.communicate(files_to_exclude.encode('utf-8'))
-raise SystemExit(p.wait())
+all_files -= {'gen/nerd-fonts-glyphs.txt', 'gen/rowcolumn-diacritics.txt'}
+cp = subprocess.run(['cloc', '--list-file', '-'], input='\n'.join(all_files).encode())
+raise SystemExit(cp.returncode)

@@ -1,6 +1,9 @@
-pkg-config
-zlib
-python
-imagemagick
-harfbuzz
-sphinx-doc
+brew "pkg-config"
+brew "zlib"
+brew "xxhash"
+brew "simde"
+brew "python"
+brew "imagemagick"
+brew "harfbuzz"
+brew "sphinx-doc"
+brew "go"

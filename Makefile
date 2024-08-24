@@ -5,6 +5,10 @@ ifdef VERBOSE
 	VVAL=--verbose
 endif
 
+ifdef FAIL_WARN
+export FAIL_WARN
+endif
+
 all:
 	python3 setup.py $(VVAL)
 
@@ -31,13 +35,37 @@ profile:
 app:
 	python3 setup.py kitty.app $(VVAL)
 
+linux-package: FORCE
+	rm -rf linux-package
+	python3 setup.py linux-package
+
+FORCE:
+
 man:
-	$(MAKE) FAIL_WARN=$(FAIL_WARN) -C docs man
+	$(MAKE) -C docs man
 
 html:
-	$(MAKE) FAIL_WARN=$(FAIL_WARN) -C docs html
+	$(MAKE) -C docs html
+
+dirhtml:
+	$(MAKE) -C docs dirhtml
 
 linkcheck:
-	$(MAKE) FAIL_WARN=$(FAIL_WARN) -C docs linkcheck
+	$(MAKE) -C docs linkcheck
+
+website:
+	./publish.py --only website
 
 docs: man html
+
+
+develop-docs:
+	$(MAKE) -C docs develop-docs
+
+
+prepare-for-cross-compile: clean all
+	python3 setup.py $(VVAL) clean --clean-for-cross-compile
+
+cross-compile:
+	python3 setup.py linux-package --skip-code-generation
+	

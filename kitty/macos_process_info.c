@@ -23,8 +23,8 @@ cwd_of_process(PyObject *self UNUSED, PyObject *pid_) {
 }
 
 // Read the maximum argument size for processes
-static inline int
-get_argmax() {
+static int
+get_argmax(void) {
     int argmax;
     int mib[] = { CTL_KERN, KERN_ARGMAX };
     size_t size = sizeof(argmax);
@@ -34,6 +34,25 @@ get_argmax() {
     return 0;
 }
 
+static PyObject*
+get_all_processes(PyObject *self UNUSED, PyObject *args UNUSED) {
+    pid_t num = proc_listallpids(NULL, 0);
+    if (num <= 0) return PyTuple_New(0);
+    size_t sz = sizeof(pid_t) * num * 2;
+    pid_t *buf = malloc(sz);
+    if (!buf) return PyErr_NoMemory();
+    num = proc_listallpids(buf, sz);
+    if (num <= 0) { free(buf); return PyTuple_New(0); }
+    PyObject *ans = PyTuple_New(num);
+    if (!ans) { free(buf); return NULL; }
+    for (pid_t i = 0; i < num; i++) {
+        long long pid = buf[i];
+        PyObject *t = PyLong_FromLongLong(pid);
+        if (!t) { free(buf); Py_CLEAR(ans); return NULL; }
+        PyTuple_SET_ITEM(ans, i, t);
+    }
+    return ans;
+}
 
 static PyObject*
 cmdline_of_process(PyObject *self UNUSED, PyObject *pid_) {
@@ -77,7 +96,7 @@ cmdline_of_process(PyObject *self UNUSED, PyObject *pid_) {
     if (sysctl(mib, 3, procargs, &argmax, NULL, 0) < 0) {
         // In case of zombie process or non-existent process we'll get EINVAL.
         if (errno == EINVAL)
-            PyErr_Format(PyExc_ValueError, "process with pid %ld either does not exist or is a zombie", pid);
+            PyErr_Format(PyExc_ValueError, "process with pid %ld either does not exist or is a zombie or you dont have permission", pid);
         else
             PyErr_SetFromErrno(PyExc_OSError);
         goto error;
@@ -174,7 +193,7 @@ environ_of_process(PyObject *self UNUSED, PyObject *pid_) {
         // In case of zombie process or a non-existent process we'll get EINVAL
         // to NSP and _psosx.py will translate it to ZP.
         if (errno == EINVAL)
-            PyErr_Format(PyExc_ValueError, "process with pid %ld either does not exist or is a zombie", pid);
+            PyErr_Format(PyExc_ValueError, "process with pid %ld either does not exist or is a zombie or you dont have permission", pid);
         else
             PyErr_SetFromErrno(PyExc_OSError);
         goto error;
@@ -255,6 +274,7 @@ static PyMethodDef module_methods[] = {
     {"cwd_of_process", (PyCFunction)cwd_of_process, METH_O, ""},
     {"cmdline_of_process", (PyCFunction)cmdline_of_process, METH_O, ""},
     {"environ_of_process", (PyCFunction)environ_of_process, METH_O, ""},
+    {"get_all_processes", (PyCFunction)get_all_processes, METH_NOARGS, ""},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 

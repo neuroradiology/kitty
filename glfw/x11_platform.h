@@ -207,6 +207,16 @@ typedef struct _GLFWwindowX11
 
 } _GLFWwindowX11;
 
+typedef struct MimeAtom {
+        Atom atom;
+        const char* mime;
+} MimeAtom;
+
+typedef struct AtomArray {
+    MimeAtom *array;
+    size_t sz, capacity;
+} AtomArray;
+
 // X11-specific global data
 //
 typedef struct _GLFWlibraryX11
@@ -225,10 +235,6 @@ typedef struct _GLFWlibraryX11
     XContext        context;
     // Most recent error code received by X error handler
     int             errorCode;
-    // Primary selection string (while the primary selection is owned)
-    char*           primarySelectionString;
-    // Clipboard string (while the selection is owned)
-    char*           clipboardString;
     // Where to place the cursor when re-enabled
     double          restoreCursorPosX, restoreCursorPosY;
     // The window whose disabled cursor mode is active
@@ -247,6 +253,7 @@ typedef struct _GLFWlibraryX11
     Atom            NET_WM_PING;
     Atom            NET_WM_WINDOW_TYPE;
     Atom            NET_WM_WINDOW_TYPE_NORMAL;
+    Atom            NET_WM_WINDOW_TYPE_DOCK;
     Atom            NET_WM_STATE;
     Atom            NET_WM_STATE_ABOVE;
     Atom            NET_WM_STATE_FULLSCREEN;
@@ -262,6 +269,7 @@ typedef struct _GLFWlibraryX11
     Atom            NET_ACTIVE_WINDOW;
     Atom            NET_FRAME_EXTENTS;
     Atom            NET_REQUEST_FRAME_EXTENTS;
+    Atom            NET_WM_STRUT_PARTIAL;
     Atom            MOTIF_WM_HINTS;
 
     // Xdnd (drag and drop) atoms
@@ -291,6 +299,10 @@ typedef struct _GLFWlibraryX11
 
     // XRM database atom
     Atom            RESOURCE_MANAGER;
+    // KDE window blur
+    Atom _KDE_NET_WM_BLUR_BEHIND_REGION;
+    // Atoms for MIME types
+    AtomArray mime_atoms, clipboard_atoms, primary_atoms;
 
     struct {
         bool        available;
