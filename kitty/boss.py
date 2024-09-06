@@ -173,10 +173,9 @@ def listen_on(spec: str) -> tuple[int, str]:
     atexit.register(remove_socket_file, s, socket_path)
     s.bind(address)
     s.listen()
-    if isinstance(address, tuple):
-        h, resolved_port = s.getsockname()
-        sfamily, host, port = spec.split(':', 2)
-        spec = f'{sfamily}:{host}:{resolved_port}'
+    if isinstance(address, tuple):  # tcp socket
+        h, resolved_port = s.getsockname()[:2]
+        spec = spec.rpartition(':')[0] + f':{resolved_port}'
     return s.fileno(), spec
 
 
@@ -362,7 +361,7 @@ class Boss:
         self.child_monitor: ChildMonitor = ChildMonitor(
             self.on_child_death,
             DumpCommands(args) if args.dump_commands or args.dump_bytes else None,
-            talk_fd, listen_fd,
+            talk_fd, listen_fd, self.listening_on.startswith('unix:')
         )
         self.args: CLIOptions = args
         self.mouse_handler: Optional[Callable[[WindowSystemMouseEvent], None]] = None

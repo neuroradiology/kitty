@@ -608,7 +608,7 @@ START_ALLOW_CASE_RANGE
         case 0xe0b0 ... 0xe0bf: case 0xe0d6 ... 0xe0d7:    // powerline box drawing
         case 0xee00 ... 0xee0b:    // fira code progress bar/spinner
         case 0x1fb00 ... 0x1fbae:  // symbols for legacy computing
-        case 0xf5d0 ... 0xf5fb:    // branch drawing characters
+        case 0xf5d0 ... 0xf60d:    // branch drawing characters
             return BOX_FONT;
         default:
             *is_emoji_presentation = has_emoji_presentation(cpu_cell, gpu_cell);
@@ -649,8 +649,8 @@ START_ALLOW_CASE_RANGE
             return 0xf00 + ch - 0x2800; // IDs from 0xf00 to 0xfff
         case 0x1fb00 ... 0x1fbae:
             return 0x1000 + ch - 0x1fb00; // IDs from 0x1000 to 0x10ae
-        case 0xf5d0 ... 0xf5fb:
-            return 0x2000 + ch - 0xf5d0; // IDs from 0x2000 to 0x202b
+        case 0xf5d0 ... 0xf60d:
+            return 0x2000 + ch - 0xf5d0; // IDs from 0x2000 to 0x203d
         default:
             return 0xffff;
     }
@@ -1740,18 +1740,25 @@ free_font_data(PyObject *self UNUSED, PyObject *args UNUSED) {
     Py_RETURN_NONE;
 }
 
-static PyObject *
-parsed_font_feature_new(PyTypeObject *type, PyObject *args, PyObject *kwds UNUSED) {
-    const char *s;
-    if (!PyArg_ParseTuple(args, "s", &s)) return NULL;
-    ParsedFontFeature *self = (ParsedFontFeature *)type->tp_alloc(type, 0);
+PyTypeObject ParsedFontFeature_Type;
+
+ParsedFontFeature*
+parse_font_feature(const char *spec) {
+    ParsedFontFeature *self = (ParsedFontFeature*)ParsedFontFeature_Type.tp_alloc(&ParsedFontFeature_Type, 0);
     if (self != NULL) {
-        if (!hb_feature_from_string(s, -1, &self->feature)) {
-            PyErr_Format(PyExc_ValueError, "%s is not a valid font feature", s);
+        if (!hb_feature_from_string(spec, -1, &self->feature)) {
+            PyErr_Format(PyExc_ValueError, "%s is not a valid font feature", self);
             Py_CLEAR(self);
         }
     }
-    return (PyObject*) self;
+    return self;
+}
+
+static PyObject *
+parsed_font_feature_new(PyTypeObject *type UNUSED, PyObject *args, PyObject *kwds UNUSED) {
+    const char *s;
+    if (!PyArg_ParseTuple(args, "s", &s)) return NULL;
+    return (PyObject*)parse_font_feature(s);
 }
 
 static PyObject*
@@ -1767,8 +1774,6 @@ parsed_font_feature_repr(PyObject *self_) {
     return s ? PyObject_Repr(s) : NULL;
 }
 
-
-PyTypeObject ParsedFontFeature_Type;
 
 static PyObject*
 parsed_font_feature_cmp(PyObject *self, PyObject *other, int op) {

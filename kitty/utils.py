@@ -327,6 +327,10 @@ def end_startup_notification(ctx: Optional['StartupCtx']) -> None:
 
 class startup_notification_handler:
 
+    # WARNING: This only works on X11 on other platforms extra_callback will be called
+    # after the window is shown, not before, as they do not do two stage window
+    # creation.
+
     def __init__(self, do_notify: bool = True, startup_id: Optional[str] = None, extra_callback: Optional[Callable[[int], None]] = None):
         self.do_notify = do_notify
         self.startup_id = startup_id
@@ -488,7 +492,14 @@ def parse_address_spec(spec: str) -> tuple[AddressFamily, Union[tuple[str, int],
             socket_path = address
     elif protocol in ('tcp', 'tcp6'):
         family = socket.AF_INET if protocol == 'tcp' else socket.AF_INET6
-        host, port = rest.rsplit(':', 1)
+        if rest.startswith('['):  # ]
+            host = rest[1:]
+            host, sep, leftover = host.rpartition(']')
+            _, port = leftover.rsplit(':', 1)
+            if ':' in host and protocol == 'tcp':
+                family = socket.AF_INET6
+        else:
+            host, port = rest.rsplit(':', 1)
         address = host, int(port)
     else:
         raise ValueError(f'Unknown protocol in listen-on value: {spec}')
@@ -1204,14 +1215,22 @@ def key_val_matcher(items: Iterable[tuple[str, str]], key_pat: 're.Pattern[str]'
 
 def shlex_split(text: str, allow_ansi_quoted_strings: bool = False) -> Iterator[str]:
     s = Shlex(text, allow_ansi_quoted_strings)
+    yielded = False
     while (q := s.next_word())[0] > -1:
         yield q[1]
+        yielded = True
+    if not yielded:
+        yield ''
 
 
 def shlex_split_with_positions(text: str, allow_ansi_quoted_strings: bool = False) -> Iterator[tuple[int, str]]:
     s = Shlex(text, allow_ansi_quoted_strings)
+    yielded = False
     while (q := s.next_word())[0] > -1:
         yield q
+        yielded = True
+    if not yielded:
+        yield 0, ''
 
 
 def timed_debug_print(*a: Any, sep: str = ' ', end: str = '\n') -> None:
