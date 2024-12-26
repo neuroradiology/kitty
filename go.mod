@@ -5,7 +5,7 @@ go 1.23
 require (
 	github.com/ALTree/bigfloat v0.2.0
 	github.com/alecthomas/chroma/v2 v2.14.0
-	github.com/bmatcuk/doublestar/v4 v4.6.1
+	github.com/bmatcuk/doublestar/v4 v4.7.1
 	github.com/dlclark/regexp2 v1.11.4
 	github.com/edwvee/exiffix v0.0.0-20240229113213-0dbb146775be
 	github.com/google/go-cmp v0.6.0
@@ -15,8 +15,8 @@ require (
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/zeebo/xxh3 v1.0.2
 	golang.org/x/exp v0.0.0-20230801115018-d63ba01acd4b
-	golang.org/x/image v0.19.0
-	golang.org/x/sys v0.24.0
+	golang.org/x/image v0.23.0
+	golang.org/x/sys v0.28.0
 	howett.net/plist v1.0.1
 )
 

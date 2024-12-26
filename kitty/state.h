@@ -46,6 +46,10 @@ typedef struct {
     CursorShape cursor_shape, cursor_shape_unfocused;
     float cursor_beam_thickness;
     float cursor_underline_thickness;
+    monotonic_t cursor_trail;
+    float cursor_trail_decay_fast;
+    float cursor_trail_decay_slow;
+    float cursor_trail_start_threshold;
     unsigned int url_style;
     unsigned int scrollback_pager_history_size;
     bool scrollback_fill_enlarged_window;
@@ -194,6 +198,12 @@ typedef struct {
     monotonic_t last_drag_scroll_at;
     uint32_t last_special_key_pressed;
     WindowBarData title_bar_data, url_target_bar_data;
+    id_type redirect_keys_to_overlay;
+    struct {
+        bool enabled;
+        void *key_data;
+        size_t count, capacity;
+    } buffered_keys;
     struct {
         PendingClick *clicks;
         size_t num, capacity;
@@ -213,10 +223,21 @@ typedef struct {
 } BorderRects;
 
 typedef struct {
+    bool needs_render;
+    monotonic_t updated_at;
+    float opacity;
+    float corner_x[4];
+    float corner_y[4];
+    float cursor_edge_x[2];
+    float cursor_edge_y[2];
+} CursorTrail;
+
+typedef struct {
     id_type id;
     unsigned int active_window, num_windows, capacity;
     Window *windows;
     BorderRects border_rects;
+    CursorTrail cursor_trail;
 } Tab;
 
 enum RENDER_STATE { RENDER_FRAME_NOT_REQUESTED, RENDER_FRAME_REQUESTED, RENDER_FRAME_READY };
@@ -352,6 +373,8 @@ ssize_t create_border_vao(void);
 bool send_cell_data_to_gpu(ssize_t, float, float, float, float, Screen *, OSWindow *);
 void draw_cells(ssize_t, const WindowRenderData*, OSWindow *, bool, bool, bool, Window*);
 void draw_centered_alpha_mask(OSWindow *w, size_t screen_width, size_t screen_height, size_t width, size_t height, uint8_t *canvas, float);
+void draw_cursor_trail(CursorTrail *trail, Window *active_window);
+bool update_cursor_trail(CursorTrail *ct, Window *w, monotonic_t now, OSWindow *os_window);
 void update_surface_size(int, int, uint32_t);
 void free_texture(uint32_t*);
 void free_framebuffer(uint32_t*);
@@ -400,3 +423,4 @@ void change_live_resize_state(OSWindow*, bool);
 bool render_os_window(OSWindow *w, monotonic_t now, bool ignore_render_frames, bool scan_for_animated_images);
 void update_mouse_pointer_shape(void);
 void adjust_window_size_for_csd(OSWindow *w, int width, int height, int *adjusted_width, int *adjusted_height);
+void dispatch_buffered_keys(Window *w);

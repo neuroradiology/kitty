@@ -14,6 +14,7 @@ from .boss import Boss
 from .child import set_default_env, set_LANG_in_default_env
 from .cli import create_opts, parse_args
 from .cli_stub import CLIOptions
+from .colors import theme_colors
 from .conf.utils import BadLine
 from .config import cached_values_for
 from .constants import (
@@ -248,6 +249,8 @@ class AppRunner:
     def __call__(self, opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (), talk_fd: int = -1) -> None:
         set_scale(opts.box_drawing_scale)
         set_options(opts, is_wayland(), args.debug_rendering, args.debug_font_fallback)
+        if theme_colors.refresh():
+            theme_colors.patch_opts(opts, args.debug_rendering)
         try:
             set_font_family(opts, add_builtin_nerd_font=True)
             _run_app(opts, args, bad_lines, talk_fd)
@@ -321,10 +324,16 @@ def macos_cmdline(argv_args: list[str]) -> list[str]:
     if ans and ans[0] == 'kitty':
         del ans[0]
     if '-1' in ans or '--single-instance' in ans:
-        # Re-exec with new argv so that the C code that handles single instance
-        # can pick up the modified argv
-        os.environ['KITTY_LAUNCHED_BY_LAUNCH_SERVICES'] = '2'  # so that use_os_log is set in the re-execed process
-        os.execl(kitty_exe(), 'kitty', *(ans + argv_args))
+        if 'KITTY_SI_DATA' in os.environ:
+            # C code will already have setup single instance
+            log_error(
+                '--single-instance supplied in both command line arguments and macos-launch-services-cmdline,'
+                ' ignoring any --instance-group in macos-launch-services-cmdline')
+        else:
+            # Re-exec with new argv so that the C code that handles single instance
+            # can pick up the modified argv
+            os.environ['KITTY_LAUNCHED_BY_LAUNCH_SERVICES'] = '2'  # so that use_os_log is set in the re-execed process
+            os.execl(kitty_exe(), 'kitty', *(ans + argv_args))
     return ans + argv_args
 
 
@@ -485,16 +494,7 @@ def _main() -> None:
     if cli_opts.single_instance:
         si_data = os.environ.pop('KITTY_SI_DATA', '')
         if si_data:
-            import atexit
-            fdnum, sep, socket_path = si_data.partition(':')
-            talk_fd = int(fdnum)
-            def cleanup_si() -> None:
-                with suppress(OSError):
-                    os.close(talk_fd)
-                with suppress(OSError):
-                    if sep and socket_path:
-                        os.unlink(socket_path)
-            atexit.register(cleanup_si)
+            talk_fd = int(si_data)
     bad_lines: list[BadLine] = []
     opts = create_opts(cli_opts, accumulate_bad_lines=bad_lines)
     setup_environment(opts, cli_opts)

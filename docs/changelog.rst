@@ -9,6 +9,16 @@ To update |kitty|, :doc:`follow the instructions <binary>`.
 Recent major new features
 ---------------------------
 
+Cursor trails [0.37]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Show an animated trail when the text cursor makes large jumps making it easy
+to follow cursor movements. Inspired by the similar feature in neovide, but
+works with terminal multiplexers and kitty windows as well. See :pull:`the pull
+request <7970>` for a demonstration video. This feature is optional and must be
+turned on by the :opt:`cursor_trail` option in :file:`kitty.conf`.
+
+
 Variable font support [0.36]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -74,10 +84,111 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.36.3 [future]
+0.38.1 [2024-12-26]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+- macOS: Fix a regression in the previous release that broke rendering of Emoji using the VS16 variation selector (:iss:`8130`)
+
+- When automatically changing colors based on OS color preference, first reset
+  all colors to default before applying the new theme so that even colors not
+  specified in the theme are correct (:iss:`8124`)
+
+- Graphics: Fix deleted but not freed images without any placements being incorrectly freed on a subsequent delete command (:disc:`8129`)
+
+- Graphics: Fix deletion of images by id not working for images with no placements (:disc:`8129`)
+
+- Add support for `escape code protocol <https://github.com/contour-terminal/contour/blob/master/docs/vt-extensions/color-palette-update-notifications.md>`__ for notifying applications on dark/light color scheme change
+
+- Cursor trails: Fix pure vertical movement sometimes not triggering a trail and holding down a key in nvim causing the trail to be glitchy (:pull:`8152`, :pull:`8153`)
+
+- macOS: Fix mouse cursor shape not always being reset to text cursor when mouse re-enters kitty (:iss:`8155`)
+
+- clone-in-kitty: Fix :envvar:`KITTY_WINDOW_ID` being cloned and thus having incorrect value (:iss:`8161`)
+
+
+0.38.0 [2024-12-15]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Allow :ref:`specifying individual color themes <auto_color_scheme>` to use so that kitty changes colors automatically following the OS dark/light mode
+
+- :opt:`notify_on_cmd_finish`: Automatically remove notifications when the window gains focus or the next notification is shown. Clearing behavior can be configured (:pull:`8100`)
+
+- Discard OSC 9 notifications that start with :code:`4;` because some misguided software is using it for "progress reporting" (:iss:`8011`)
+
+- Wayland GNOME: Workaround bug in mutter causing double tap on titlebar to not always work (:iss:`8054`)
+
+- clipboard kitten: Fix a bug causing kitten to hang in filter mode when input data size is not divisible by 3 and larger than 8KB (:iss:`8059`)
+
+- Wayland: Fix an abort when a client program tries to set an invalid title containing interleaved escape codes and UTF-8 multi-byte characters (:iss:`8067`)
+
+- Graphics protocol: Fix delete by number not deleting newest image with the specified number (:iss:`8071`)
+
+- Fix dashed and dotted underlines not being drawn at the same y position as straight underlines at all font sizes (:iss:`8074`)
+
+- panel kitten: Allow creating floating and on-top panels with arbitrary placement and size on Wayland (:pull:`8068`)
+
+- :opt:`remote_control_password`: Fix using a password without any actions not working (:iss:`8082`)
+
+- Fix enlarging window when a long line is wrapped between the first line of the scrollback buffer and the screen inserting a spurious newline (:iss:`7033`)
+
+- When re-attaching a detached tab preserve internal layout state such as biases and orientations (:iss:`8106`)
+
+- hints/unicode_input kittens: Do not lose keypresses that are sent very rapidly via an automation tool immediately after the kitten is launched (:iss:`7089`)
+
+
+0.37.0 [2024-10-30]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- A new optional :opt:`text cursor movement animation <cursor_trail>` that
+  shows a "trail" following the movement of the cursor making it easy to follow
+  large cursor jumps (:pull:`7970`)
+
+- Custom kittens: Add :ref:`a framework <kitten_main_rc>` for easily and securely using remote control from within a kitten's :code:`main()` function
+
+- kitten icat: Fix the :option:`kitty +kitten icat --no-trailing-newline` not working when using unicode placeholders (:iss:`7948`)
+
+- :opt:`tab_title_template` allow using the 256 terminal colors for formatting (:disc:`7976`)
+
+- Fix resizing window when alternate screen is active does not preserve trailing blank output line in the main screen (:iss:`7978`)
+
+- Wayland: Fix :opt:`background_opacity` less than one causing flicker on startup when the Wayland compositor supports single pixel buffers (:iss:`7987`)
+
+- Fix background image flashing when closing a tab (:iss:`7999`)
+
+- When running a kitten that modifies the kitty config file if no config file exists create a commented out default config file and then modify it (:iss:`7991`)
+
+0.36.4 [2024-09-27]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Fix a regression in the previous release that caused window padding to be rendered opaque even when :opt:`background_opacity` is less than 1 (:iss:`7895`)
+
+- Wayland GNOME: Fix a crash when using multiple monitors with different scales and starting on or moving to the monitor with lower scale (:iss:`7894`)
+
+- macOS: Fix a regression in the previous release that caused junk to be rendered in font previews in the choose fonts kitten and crash on Intel macs (:iss:`7892`)
+
+
+0.36.3 [2024-09-25]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- The option ``second_transparent_bg`` has been removed and replaced by :opt:`transparent_background_colors` which allows setting up to seven additional colors that will be transparent, with individual opacities per color (:iss:`7646`)
+
 - Fix a regression in the previous release that broke use of the ``cd`` command in session files (:iss:`7829`)
+
+- macOS: Fix shortcuts that become entries in the global menubar being reported as removed shortcuts in the debug output
+
+- macOS: Fix :opt:`macos_option_as_alt` not working when :kbd:`caps lock` is engaged (:iss:`7836`)
+
+- Fix a regression when tinting of background images was introduced that caused window borders to have :opt:`background_opacity` applied to them (:iss:`7850`)
+
+- Fix a regression that broke writing to the clipboard using the OSC 5522 protocol (:iss:`7858`)
+
+- macOS: Fix a regression in the previous release that caused kitty to fail to run after an unclean shutdown/crash when using --single-instance (:iss:`7846`)
+
+- kitten @ ls: Fix the ``--self`` flag not working (:iss:`7864`)
+
+- Remote control: Fix ``--match state:self`` not working (:disc:`7886`)
+
+- Splits layout: Allow setting the ``split_axis`` option to ``auto`` so that all new windows have their split axis chosen automatically unless explicitly specified in the launch command (:iss:`7887`)
 
 0.36.2 [2024-09-06]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -120,7 +231,7 @@ Detailed list of changes
 
 - launch command: A new :option:`launch --bias` option to adjust the size of newly created windows declaratively (:iss:`7634`)
 
-- A new option :opt:`second_transparent_bg` to make a second background color semi-transparent via :opt:`background_opacity`. Useful for things like cursor line highlight in editors (:iss:`7646`)
+- A new option :opt:`transparent_background_colors` to make a second background color semi-transparent via :opt:`background_opacity`. Useful for things like cursor line highlight in editors (:iss:`7646`)
 
 - A new :doc:`notify </kittens/notify>` kitten to show desktop notifications
   from the command line with support for icons, buttons and more.

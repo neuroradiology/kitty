@@ -37,6 +37,7 @@ from kitty.cli import (
 )
 from kitty.conf.generate import gen_go_code
 from kitty.conf.types import Definition
+from kitty.config import commented_out_default_config
 from kitty.guess_mime_type import known_extensions, text_mimes
 from kitty.key_encoding import config_mod_map
 from kitty.key_names import character_key_name_aliases, functional_key_name_aliases
@@ -582,6 +583,7 @@ def load_ref_map() -> dict[str, dict[str, str]]:
 def generate_constants() -> str:
     from kittens.hints.main import DEFAULT_REGEX
     from kittens.query_terminal.main import all_queries
+    from kitty.colors import ThemeFile
     from kitty.config import option_names_for_completion
     from kitty.fast_data_types import FILE_TRANSFER_CODE
     from kitty.options.utils import allowed_shell_integration_values, url_style_map
@@ -626,6 +628,7 @@ var RefMap = map[string]string{serialize_go_dict(ref_map['ref'])}
 var DocTitleMap = map[string]string{serialize_go_dict(ref_map['doc'])}
 var AllowedShellIntegrationValues = []string{{ {str(sorted(allowed_shell_integration_values))[1:-1].replace("'", '"')} }}
 var QueryNames = []string{{ {query_names} }}
+var CommentedOutDefaultConfig = "{serialize_as_go_string(commented_out_default_config())}"
 var KittyConfigDefaults = struct {{
 Term, Shell_integration, Select_by_word_characters, Url_excluded_characters, Shell string
 Wheel_scroll_multiplier int
@@ -636,6 +639,9 @@ Select_by_word_characters: `{Options.select_by_word_characters}`, Wheel_scroll_m
 Shell: "{Options.shell}", Url_excluded_characters: "{Options.url_excluded_characters}",
 }}
 const OptionNames = {option_names}
+const DarkThemeFileName = "{ThemeFile.dark.value}"
+const LightThemeFileName = "{ThemeFile.light.value}"
+const NoPreferenceThemeFileName = "{ThemeFile.no_preference.value}"
 '''  # }}}
 
 

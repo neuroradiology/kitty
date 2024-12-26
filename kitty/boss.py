@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import re
+import socket
 import sys
 from collections.abc import Container, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -18,7 +19,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
-    Literal,
     Optional,
     Union,
 )
@@ -35,6 +35,7 @@ from .clipboard import (
     set_clipboard_string,
     set_primary_selection,
 )
+from .colors import ColorSchemes, theme_colors
 from .conf.utils import BadLine, KeyAction, to_cmdline
 from .config import common_opts_as_dict, prepare_config_file_for_editing
 from .constants import (
@@ -91,7 +92,6 @@ from .fast_data_types import (
     monotonic,
     os_window_focus_counters,
     os_window_font_size,
-    patch_global_colors,
     redirect_mouse_handling,
     ring_bell,
     run_with_activation_token,
@@ -117,7 +117,6 @@ from .notifications import NotificationManager
 from .options.types import Options, nullable_colors
 from .options.utils import MINIMUM_FONT_SIZE, KeyboardMode, KeyDefinition
 from .os_window_size import initial_window_size_func
-from .rgb import color_from_int
 from .session import Session, create_sessions, get_os_window_sizing_data
 from .shaders import load_shader_programs
 from .tabs import SpecialWindow, SpecialWindowInstance, Tab, TabDict, TabManager
@@ -1551,6 +1550,7 @@ class Boss:
     def default_bg_changed_for(self, window_id: int) -> None:
         w = self.window_id_map.get(window_id)
         if w is not None:
+            w.on_color_scheme_preference_change()
             tm = self.os_window_map.get(w.os_window_id)
             if tm is not None:
                 tm.update_tab_bar_data()
@@ -1947,17 +1947,32 @@ class Boss:
             else:
                 cmd = [kitty_exe(), '+runpy', 'from kittens.runner import main; main()']
                 env['PYTHONWARNINGS'] = 'ignore'
-            overlay_window = tab.new_special_window(
-                SpecialWindow(
-                    cmd + final_args,
-                    stdin=data,
-                    env=env,
-                    cwd=w.cwd_of_child,
-                    overlay_for=w.id,
-                    overlay_behind=end_kitten.has_ready_notification,
-                ),
-                copy_colors_from=w
-            )
+            remote_control_fd = -1
+            if end_kitten.allow_remote_control:
+                remote_control_passwords: Optional[dict[str, Sequence[str]]] = None
+                initial_data = b''
+                if end_kitten.remote_control_password:
+                    from secrets import token_hex
+                    p = token_hex(16)
+                    remote_control_passwords = {p: end_kitten.remote_control_password if isinstance(end_kitten.remote_control_password, str) else ''}
+                    initial_data = p.encode() + b'\n'
+                remote = self.add_fd_based_remote_control(remote_control_passwords, initial_data)
+                remote_control_fd = remote.fileno()
+            try:
+                overlay_window = tab.new_special_window(
+                    SpecialWindow(
+                        cmd + final_args,
+                        stdin=data,
+                        env=env,
+                        cwd=w.cwd_of_child,
+                        overlay_for=w.id,
+                        overlay_behind=end_kitten.has_ready_notification,
+                    ),
+                    copy_colors_from=w, remote_control_fd=remote_control_fd,
+                )
+            finally:
+                if end_kitten.allow_remote_control:
+                    remote.close()
             wid = w.id
             overlay_window.actions_on_close.append(partial(self.on_kitten_finish, wid, custom_callback or end_kitten.handle_result, default_data=default_data))
             overlay_window.open_url_handler = end_kitten.open_url_handler
@@ -2350,6 +2365,22 @@ class Boss:
         overlay_for = w.id if w and as_overlay else None
         return SpecialWindow(cmd, input_data, cwd_from=cwd_from, overlay_for=overlay_for, env=env)
 
+    def add_fd_based_remote_control(self, remote_control_passwords: Optional[dict[str, Sequence[str]]] = None, initial_data: bytes = b'') -> socket.socket:
+        local, remote = socket.socketpair()
+        os.set_inheritable(remote.fileno(), True)
+        if initial_data:
+            local.send(initial_data)
+        lfd = os.dup(local.fileno())
+        local.close()
+        try:
+            peer_id = self.child_monitor.inject_peer(lfd)
+        except Exception:
+            os.close(lfd)
+            remote.close()
+            raise
+        self.peer_data_map[peer_id] = remote_control_passwords
+        return remote
+
     def run_background_process(
         self,
         cmd: list[str],
@@ -2383,20 +2414,9 @@ class Boss:
             pass_fds: list[int] = []
             fds_to_close_on_launch_failure: list[int] = []
             if allow_remote_control:
-                import socket
-                local, remote = socket.socketpair()
-                os.set_inheritable(remote.fileno(), True)
-                lfd = os.dup(local.fileno())
-                local.close()
-                try:
-                    peer_id = self.child_monitor.inject_peer(lfd)
-                except Exception:
-                    os.close(lfd)
-                    remote.close()
-                    raise
+                remote = self.add_fd_based_remote_control(remote_control_passwords)
                 pass_fds.append(remote.fileno())
                 add_env('KITTY_LISTEN_ON', f'fd:{remote.fileno()}')
-                self.peer_data_map[peer_id] = remote_control_passwords
             if activation_token:
                 add_env('XDG_ACTIVATION_TOKEN', activation_token)
             fds_to_close_on_launch_failure = list(pass_fds)
@@ -2616,26 +2636,6 @@ class Boss:
         for window in windows:
             window.screen.disable_ligatures = strategy
             window.refresh()
-
-    def patch_colors(self, spec: dict[str, Optional[int]], configured: bool = False) -> None:
-        opts = get_options()
-        if configured:
-            for k, v in spec.items():
-                if hasattr(opts, k):
-                    if v is None:
-                        if k in nullable_colors:
-                            setattr(opts, k, None)
-                    else:
-                        setattr(opts, k, color_from_int(v))
-        for tm in self.all_tab_managers:
-            tm.tab_bar.patch_colors(spec)
-            tm.tab_bar.layout()
-            tm.mark_tab_bar_dirty()
-            t = tm.active_tab
-            if t is not None:
-                t.relayout_borders()
-            set_os_window_chrome(tm.os_window_id)
-        patch_global_colors(spec, configured)
 
     def apply_new_options(self, opts: Options) -> None:
         from .fonts.box_drawing import set_scale
@@ -3034,9 +3034,9 @@ class Boss:
         from .debug_config import debug_config
         w = self.window_for_dispatch or self.active_window
         if w is not None:
-            output = debug_config(get_options())
+            output = debug_config(get_options(), self.mappings.global_shortcuts)
             set_clipboard_string(re.sub(r'\x1b.+?m', '', output))
-            output += '\n\x1b[35mThis debug output has been copied to the clipboard\x1b[m'
+            output += '\n\x1b[35mThis debug output has been copied to the clipboard\x1b[m'  # ]]]
             self.display_scrollback(w, output, title=_('Current kitty options'), report_cursor=False)
 
     @ac('misc', 'Discard this event completely ignoring it')
@@ -3047,8 +3047,8 @@ class Boss:
     def sanitize_url_for_dispay_to_user(self, url: str) -> str:
         return sanitize_url_for_dispay_to_user(url)
 
-    def on_system_color_scheme_change(self, appearance: Literal['light', 'dark', 'no_preference']) -> None:
-        log_error('system color theme changed:', appearance)
+    def on_system_color_scheme_change(self, appearance: ColorSchemes, is_initial_value: bool) -> None:
+        theme_colors.on_system_color_scheme_change(appearance, is_initial_value)
 
     @ac('win', '''
         Toggle to the tab matching the specified expression

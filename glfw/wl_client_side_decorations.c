@@ -332,7 +332,7 @@ render_title_bar(_GLFWwindow *window, bool to_front_buffer) {
     const uint32_t dark_fg = is_focused ? 0xffffffff : 0xffcccccc, dark_bg = is_focused ? 0xff303030 : 0xff242424;
     static const uint32_t hover_dark_bg = 0xff444444, hover_light_bg = 0xffbbbbbb;
     uint32_t bg_color = light_bg, fg_color = light_fg, hover_bg = hover_light_bg;
-    GLFWColorScheme appearance = glfwGetCurrentSystemColorTheme();
+    GLFWColorScheme appearance = glfwGetCurrentSystemColorTheme(false);
     bool is_dark = false;
     if (decs.use_custom_titlebar_color || appearance == GLFW_COLOR_SCHEME_NO_PREFERENCE) {
         bg_color = 0xff000000 | (decs.titlebar_color & 0xffffff);
@@ -468,10 +468,8 @@ render_shadows(_GLFWwindow *window) {
 
 static bool
 create_shm_buffers(_GLFWwindow* window) {
-    const double scale = _glfwWaylandWindowScale(window);
-
     decs.mapping.size = 0;
-#define bp(which, width, height) decs.mapping.size += init_buffer_pair(&decs.which.buffer, width, height, scale);
+#define bp(which, width, height) decs.mapping.size += init_buffer_pair(&decs.which.buffer, width, height, decs.for_window_state.fscale);
     bp(titlebar, window->wl.width, decs.metrics.visible_titlebar_height);
     bp(shadow_top, window->wl.width, decs.metrics.width);
     bp(shadow_bottom, window->wl.width, decs.metrics.width);
@@ -504,7 +502,7 @@ create_shm_buffers(_GLFWwindow* window) {
     wl_shm_pool_destroy(pool);
     render_title_bar(window, true);
     render_shadows(window);
-    debug("Created decoration buffers at scale: %f\n", scale);
+    debug("Created decoration buffers at scale: %f\n", decs.for_window_state.fscale);
     return true;
 }
 
@@ -577,10 +575,11 @@ ensure_csd_resources(_GLFWwindow *window) {
     if (!window_is_csd_capable(window)) return false;
     const bool is_focused = window->id == _glfw.focusedWindowId;
     const bool focus_changed = is_focused != decs.for_window_state.focused;
+    const double current_scale = _glfwWaylandWindowScale(window);
     const bool size_changed = (
         decs.for_window_state.width != window->wl.width ||
         decs.for_window_state.height != window->wl.height ||
-        decs.for_window_state.fscale != _glfwWaylandWindowScale(window) ||
+        decs.for_window_state.fscale != current_scale ||
         !decs.mapping.data
     );
     const bool state_changed = decs.for_window_state.toplevel_states != window->wl.current.toplevel_states;
@@ -589,6 +588,7 @@ ensure_csd_resources(_GLFWwindow *window) {
             decs.for_window_state.width, decs.for_window_state.height, window->wl.width, window->wl.height, needs_update,
             size_changed, state_changed, decs.buffer_destroyed);
     if (!needs_update) return false;
+    decs.for_window_state.fscale = current_scale;  // used in create_shm_buffers
     if (size_changed || decs.buffer_destroyed) {
         free_csd_buffers(window);
         if (!create_shm_buffers(window)) return false;
@@ -618,7 +618,6 @@ ensure_csd_resources(_GLFWwindow *window) {
 
     decs.for_window_state.width = window->wl.width;
     decs.for_window_state.height = window->wl.height;
-    decs.for_window_state.fscale = _glfwWaylandWindowScale(window);
     decs.for_window_state.focused = is_focused;
     decs.for_window_state.toplevel_states = window->wl.current.toplevel_states;
     return true;
@@ -703,7 +702,7 @@ set_cursor(GLFWCursorShape shape, _GLFWwindow* window)
     struct wl_cursor_theme *theme = glfw_wlc_theme_for_scale(scale);
     if (!theme) return;
     cursor = _glfwLoadCursor(shape, theme);
-    if (!cursor) return;
+    if (!cursor || !cursor->images) return;
     image = cursor->images[0];
     if (!image) return;
     if (image->width % scale || image->height % scale) {
@@ -760,6 +759,7 @@ handle_pointer_leave(_GLFWwindow *window, struct wl_surface *surface) {
     }
 #undef c
     decs.focus = CENTRAL_WINDOW;
+    decs.dragging = false;
 }
 
 
@@ -769,7 +769,11 @@ handle_pointer_move(_GLFWwindow *window) {
     switch (decs.focus)
     {
         case CENTRAL_WINDOW: break;
-        case CSD_titlebar: if (update_hovered_button(window)) cursorShape = GLFW_POINTER_CURSOR; break;
+        case CSD_titlebar: {
+            if (decs.dragging) {
+                if (window->wl.xdg.toplevel) xdg_toplevel_move(window->wl.xdg.toplevel, _glfw.wl.seat, _glfw.wl.pointer_serial);
+            } else if (update_hovered_button(window)) cursorShape = GLFW_POINTER_CURSOR;
+        } break;
         case CSD_shadow_top: cursorShape = GLFW_N_RESIZE_CURSOR; break;
         case CSD_shadow_bottom: cursorShape = GLFW_S_RESIZE_CURSOR; break;
         case CSD_shadow_left: cursorShape = GLFW_W_RESIZE_CURSOR; break;
@@ -790,6 +794,7 @@ handle_pointer_enter(_GLFWwindow *window, struct wl_surface *surface) {
     all_surfaces(Q)
 #undef Q
     decs.focus = CENTRAL_WINDOW;
+    decs.dragging = false;
 }
 
 static void
@@ -817,9 +822,7 @@ handle_pointer_button(_GLFWwindow *window, uint32_t button, uint32_t state) {
                         decs.maximize.hovered = false; decs.titlebar_needs_update = true;
                     } else if (decs.close.hovered) _glfwInputWindowCloseRequest(window);
                 }
-                if (!has_hovered_button(window)) {
-                    if (window->wl.xdg.toplevel) xdg_toplevel_move(window->wl.xdg.toplevel, _glfw.wl.seat, _glfw.wl.pointer_serial);
-                }
+                decs.dragging = !has_hovered_button(window);
                 break;
             case CSD_shadow_left: edges = XDG_TOPLEVEL_RESIZE_EDGE_LEFT; break;
             case CSD_shadow_upper_left: edges = XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT; break;

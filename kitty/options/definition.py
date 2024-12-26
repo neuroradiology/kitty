@@ -350,8 +350,48 @@ inactivity. Set to zero to never stop blinking.
 '''
     )
 
-egr()  # }}}
+opt('cursor_trail', '0',
+    option_type='positive_int', ctype='time-ms',
+    long_text='''
+Set this to a value larger than zero to enable a "cursor trail" animation.
+This is an animation that shows a "trail" following the movement of the text cursor.
+It makes it easy to follow large cursor jumps and makes for a cool visual effect
+of the cursor zooming around the screen. The actual value of this option
+controls when the animation is triggered. It is a number of milliseconds. The
+trail animation only follows cursors that have stayed in their position for longer
+than the specified number of milliseconds. This prevents trails from appearing
+for cursors that rapidly change their positions during UI updates in complex applications.
+See :opt:`cursor_trail_decay` to control the animation speed and :opt:`cursor_trail_start_threshold`
+to control when a cursor trail is started.
+'''
+    )
 
+opt('cursor_trail_decay', '0.1 0.4',
+    option_type='cursor_trail_decay',
+    ctype='!cursor_trail_decay',
+    long_text='''
+Controls the decay times for the cursor trail effect when the :opt:`cursor_trail`
+is enabled. This option accepts two positive float values specifying the
+fastest and slowest decay times in seconds. The first value corresponds to the
+fastest decay time (minimum), and the second value corresponds to the slowest
+decay time (maximum). The second value must be equal to or greater than the
+first value. Smaller values result in a faster decay of the cursor trail.
+Adjust these values to control how quickly the cursor trail fades away.
+''',
+    )
+
+opt('cursor_trail_start_threshold', '2',
+    option_type='positive_int', ctype='int',
+    long_text='''
+Set the distance threshold for starting the cursor trail. This option accepts a
+positive integer value that represents the minimum number of cells the
+cursor must move before the trail is started. When the cursor moves less than
+this threshold, the trail is skipped, reducing unnecessary cursor trail
+animation.
+'''
+    )
+
+egr()  # }}}
 
 # scrollback {{{
 agr('scrollback', 'Scrollback')
@@ -521,7 +561,8 @@ opt('underline_hyperlinks', 'hover', choices=('hover', 'always', 'never'),
     ctype='underline_hyperlinks', long_text='''
 Control how hyperlinks are underlined. They can either be underlined on mouse
 :code:`hover`, :code:`always` (i.e. permanently underlined) or :code:`never` which means
-that kitty will not apply any underline styling to hyperlinks.
+that kitty will not apply any underline styling to hyperlinks. Note that the value of :code:`always`
+only applies to real (OSC 8) hyperlinks not text that is detected to be a URL on mouse hover.
 Uses the :opt:`url_style` and :opt:`url_color` settings for the underline style. Note
 that reloading the config and changing this value to/from :code:`always` will only
 affect text subsequently received by kitty.
@@ -1172,7 +1213,7 @@ faded and one being fully opaque.
 
 opt('window_logo_scale', '0', option_type='window_logo_scale', ctype='!window_logo_scale', long_text='''
 The percentage (0-100] of the window size to which the logo should scale. Using a single
-number means the logo is scaled to that percentage of the shortest window dimension, while preseving
+number means the logo is scaled to that percentage of the shortest window dimension, while preserving
 aspect ratio of the logo image.
 
 Using two numbers means the width and height of the logo are scaled to the respective
@@ -1398,6 +1439,7 @@ use styling directives, for example:
 ``{fmt.fg.red}red{fmt.fg.tab}normal{fmt.bg._00FF00}greenbg{fmt.bg.tab}``.
 Similarly, for bold and italic:
 ``{fmt.bold}bold{fmt.nobold}normal{fmt.italic}italic{fmt.noitalic}``.
+The 256 eight terminal colors can be used as ``fmt.fg.color0`` through ``fmt.fg.color255``.
 Note that for backward compatibility, if :code:`{bell_symbol}` or
 :code:`{activity_symbol}` are not present in the template, they are prepended to
 it.
@@ -1481,7 +1523,7 @@ theme with a background color in your editor, it will not be rendered as
 transparent. Instead you should change the default background color in your
 kitty config and not use a background color in the editor color scheme. Or use
 the escape codes to set the terminals default colors in a shell script to
-launch your editor. See also :opt:`second_transparent_bg`.
+launch your editor. See also :opt:`transparent_background_colors`.
 Be aware that using a value less than 1.0 is a (possibly
 significant) performance hit. When using a low value for this setting, it is
 desirable that you set the :opt:`background` color to a color the matches the
@@ -1527,14 +1569,22 @@ opt('background_image_linear', 'no',
     long_text='When background image is scaled, whether linear interpolation should be used.'
     )
 
-opt('second_transparent_bg', 'none', option_type='to_color_or_none', long_text='''
-When the background color matches this color, :opt:`background_opacity` is applied to it
-to render it as semi-transparent, just as for colors matching the main :opt:`background` color.
+opt('transparent_background_colors', '', option_type='transparent_background_colors', long_text='''
+A space separated list of upto 7 colors, with opacity. When the background color of a cell matches one of these colors,
+it is rendered semi-transparent using the specified opacity.
+
 Useful in more complex UIs like editors where you could want more than a single background color
-to be rendered as transparent, for instance, for a cursor highlight line background.
+to be rendered as transparent, for instance, for a cursor highlight line background or a highlighted block.
 Terminal applications can set this color using :ref:`The kitty color control <color_control>`
 escape code.
-''')
+
+The syntax for specifying colors is: :code:`color@opacity`, where the :code:`@opacity`
+part is optional. When unspecified, the value of :opt:`background_opacity` is used. For example::
+
+    transparent_background_colors red@0.5 #00ff00@0.3
+
+'''
+)
 
 opt('dynamic_background_opacity', 'no',
     option_type='to_bool', ctype='bool',
@@ -3056,7 +3106,7 @@ using Boolean operators. Some examples::
 
     filter_notification title:hello or body:"abc.*def"
     # filter out notification from vim except for ones about updates, (?i)
-    # makes matching case insesitive.
+    # makes matching case insensitive.
     filter_notification app:"[ng]?vim" and not body:"(?i)update"
     # filter out all notifications
     filter_notification all
@@ -3254,7 +3304,13 @@ and exits will spam a notification.
 Second, the action to perform. The default is :code:`notify`. The possible values are:
 
 :code:`notify`
-    Send a desktop notification.
+    Send a desktop notification. The subsequent arguments are optional and specify when
+    the notification is automatically cleared. The set of possible events when the notification is
+    cleared are: :code:`focus` and :code:`next`. :code:`focus` means that when the notification
+    policy is :code:`unfocused` or :code:`invisible` the notification is automatically cleared
+    when the window regains focus. The value of :code:`next` means that the previous notification
+    is cleared when the next notification is shown. The default when no arguments are specified
+    is: :code:`focus next`.
 
 :code:`bell`
     Ring the terminal bell.
@@ -3273,6 +3329,9 @@ Some more examples::
     # Run 'notify-send' when a command takes more than 10 seconds in a invisible window
     # Here %c is replaced by the current command line and %s by the job exit code
     notify_on_cmd_finish invisible 10.0 command notify-send "job finished with status: %s" %c
+    # Do not clear previous notification when next command finishes or window regains focus
+    notify_on_cmd_finish invisible 5.0 notify
+
 '''
     )
 
@@ -3303,12 +3362,14 @@ note that not all software supports this. A value of :code:`none` means do not t
 
 
 opt('forward_stdio', 'no', option_type='to_bool', long_text='''
-Forward STDOUT and STDERR of the kitty process to child processes
-as file descriptors 3 and 4. This is useful for debugging as it
+Forward STDOUT and STDERR of the kitty process to child processes.
+This is useful for debugging as it
 allows child processes to print to kitty's STDOUT directly. For example,
-:code:`echo hello world >&3` in a shell will print to the parent kitty's
-STDOUT. When enabled, this also sets the :code:`KITTY_STDIO_FORWARDED=3`
-environment variable so child processes know about the forwarding.
+:code:`echo hello world >&$KITTY_STDIO_FORWARDED` in a shell will print
+to the parent kitty's STDOUT. Sets the :code:`KITTY_STDIO_FORWARDED=fdnum`
+environment variable so child processes know about the forwarding. Note that
+on macOS this prevents the shell from being run via the login utility so getlogin()
+will not work in programs run in this session.
 ''')
 
 opt('+menu_map', '',

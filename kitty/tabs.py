@@ -30,6 +30,7 @@ from .fast_data_types import (
     GLFW_RELEASE,
     add_tab,
     attach_window,
+    buffer_keys_in_window,
     current_focused_os_window_id,
     detach_window,
     focus_os_window,
@@ -45,6 +46,7 @@ from .fast_data_types import (
     ring_bell,
     set_active_tab,
     set_active_window,
+    set_redirect_keys_to_overlay,
     swap_tabs,
     sync_os_window_title,
 )
@@ -184,9 +186,14 @@ class Tab:  # {{{
     def take_over_from(self, other_tab: 'Tab') -> None:
         self.name, self.cwd = other_tab.name, other_tab.cwd
         self.enabled_layouts = list(other_tab.enabled_layouts)
-        if other_tab._current_layout_name:
-            self._set_current_layout(other_tab._current_layout_name)
         self._last_used_layout = other_tab._last_used_layout
+        if clname := other_tab._current_layout_name:
+            cl = other_tab.current_layout
+            other_tab._set_current_layout(clname)
+            cl.set_owner(self.os_window_id, self.id)
+            self.current_layout: Layout = cl
+            self._current_layout_name = clname
+            self.mark_tab_bar_dirty()
         for window in other_tab.windows:
             detach_window(other_tab.os_window_id, other_tab.id, window.id)
         self.windows = other_tab.windows
@@ -453,6 +460,8 @@ class Tab:  # {{{
         is_clone_launch: str = '',
         add_listen_on_env_var: bool = True,
         hold: bool = False,
+        pass_fds: tuple[int, ...] = (),
+        remote_control_fd: int = -1,
     ) -> Child:
         check_for_suitability = True
         if cmd is None:
@@ -500,7 +509,9 @@ class Tab:  # {{{
         pwid = platform_window_id(self.os_window_id)
         if pwid is not None:
             fenv['WINDOWID'] = str(pwid)
-        ans = Child(cmd, cwd or self.cwd, stdin, fenv, cwd_from, is_clone_launch=is_clone_launch, add_listen_on_env_var=add_listen_on_env_var, hold=hold)
+        ans = Child(
+                cmd, cwd or self.cwd, stdin, fenv, cwd_from, is_clone_launch=is_clone_launch,
+                add_listen_on_env_var=add_listen_on_env_var, hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd)
         ans.fork()
         return ans
 
@@ -509,6 +520,10 @@ class Tab:  # {{{
         overlay_behind: bool = False, bias: Optional[float] = None
     ) -> None:
         self.current_layout.add_window(self.windows, window, location, overlay_for, put_overlay_behind=overlay_behind, bias=bias)
+        if overlay_behind and (w := self.active_window):
+            set_redirect_keys_to_overlay(self.os_window_id, self.id, w.id, window.id)
+            buffer_keys_in_window(self.os_window_id, self.id, window.id, True)
+            window.keys_redirected_till_ready_from = w.id
         self.mark_tab_bar_dirty()
         self.relayout()
 
@@ -532,11 +547,13 @@ class Tab:  # {{{
         remote_control_passwords: Optional[dict[str, Sequence[str]]] = None,
         hold: bool = False,
         bias: Optional[float] = None,
+        pass_fds: tuple[int, ...] = (),
+        remote_control_fd: int = -1,
     ) -> Window:
         child = self.launch_child(
             use_shell=use_shell, cmd=cmd, stdin=stdin, cwd_from=cwd_from, cwd=cwd, env=env,
             is_clone_launch=is_clone_launch, add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True,
-            hold=hold,
+            hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd,
         )
         window = Window(
             self, child, self.args, override_title=override_title,
@@ -560,6 +577,9 @@ class Tab:  # {{{
             location: Optional[str] = None,
             copy_colors_from: Optional[Window] = None,
             allow_remote_control: bool = False,
+            remote_control_passwords: Optional[dict[str, Sequence[str]]] = None,
+            pass_fds: tuple[int, ...] = (),
+            remote_control_fd: int = -1,
     ) -> Window:
         return self.new_window(
             use_shell=False, cmd=special_window.cmd, stdin=special_window.stdin,
@@ -567,7 +587,7 @@ class Tab:  # {{{
             cwd_from=special_window.cwd_from, cwd=special_window.cwd, overlay_for=special_window.overlay_for,
             env=special_window.env, location=location, copy_colors_from=copy_colors_from,
             allow_remote_control=allow_remote_control, watchers=special_window.watchers, overlay_behind=special_window.overlay_behind,
-            hold=special_window.hold,
+            hold=special_window.hold, remote_control_passwords=remote_control_passwords, pass_fds=pass_fds, remote_control_fd=remote_control_fd,
         )
 
     @ac('win', 'Close all windows in the tab other than the currently active window')

@@ -59,6 +59,8 @@ class Callbacks:
         response = color_control(self.color_profile, code, data)
         if response:
             def p(x):
+                if '@' in x:
+                    return (to_color(x.partition('@')[0]), int(255 * float(x.partition('@')[2])))
                 ans = to_color(x)
                 if ans is None:
                     ans = x
@@ -389,7 +391,12 @@ class PTY:
     def wait_till(self, q, timeout=10, timeout_msg=None):
         end_time = time.monotonic() + timeout
         while not q() and time.monotonic() <= end_time:
-            self.process_input_from_child(timeout=end_time - time.monotonic())
+            try:
+                self.process_input_from_child(timeout=end_time - time.monotonic())
+            except OSError as e:
+                if not q():
+                    raise Exception(f'Failed to read from pty with error: {e}. Screen contents:  \n {repr(self.screen_contents())}') from e
+                return
         if not q():
             msg = 'The condition was not met'
             if timeout_msg is not None:

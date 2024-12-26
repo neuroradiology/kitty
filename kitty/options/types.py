@@ -334,6 +334,9 @@ option_names = (  # {{{
  'cursor_shape_unfocused',
  'cursor_stop_blinking_after',
  'cursor_text_color',
+ 'cursor_trail',
+ 'cursor_trail_decay',
+ 'cursor_trail_start_threshold',
  'cursor_underline_thickness',
  'default_pointer_shape',
  'detect_urls',
@@ -409,7 +412,6 @@ option_names = (  # {{{
  'scrollback_lines',
  'scrollback_pager',
  'scrollback_pager_history_size',
- 'second_transparent_bg',
  'select_by_word_characters',
  'select_by_word_characters_forward',
  'selection_background',
@@ -443,6 +445,7 @@ option_names = (  # {{{
  'text_composition_strategy',
  'text_fg_override_threshold',
  'touch_scroll_multiplier',
+ 'transparent_background_colors',
  'undercurl_style',
  'underline_hyperlinks',
  'update_check_interval',
@@ -510,6 +513,9 @@ class Options:
     cursor_shape_unfocused: int = 4
     cursor_stop_blinking_after: float = 15.0
     cursor_text_color: typing.Optional[kitty.fast_data_types.Color] = Color(17, 17, 17)
+    cursor_trail: int = 0
+    cursor_trail_decay: typing.Tuple[float, float] = (0.1, 0.4)
+    cursor_trail_start_threshold: int = 2
     cursor_underline_thickness: float = 2.0
     default_pointer_shape: choices_for_default_pointer_shape = 'beam'
     detect_urls: bool = True
@@ -559,7 +565,7 @@ class Options:
     mark3_background: Color = Color(242, 116, 188)
     mark3_foreground: Color = Color(0, 0, 0)
     mouse_hide_wait: float = 0.0 if is_macos else 3.0
-    notify_on_cmd_finish: NotifyOnCmdFinish = NotifyOnCmdFinish(when='never', duration=5.0, action='notify', cmdline=())
+    notify_on_cmd_finish: NotifyOnCmdFinish = NotifyOnCmdFinish(when='never', duration=5.0, action='notify', cmdline=(), clear_on=('focus', 'next'))
     open_url_with: typing.List[str] = ['default']
     paste_actions: typing.FrozenSet[str] = frozenset({'confirm', 'quote-urls-at-prompt'})
     placement_strategy: choices_for_placement_strategy = 'center'
@@ -574,7 +580,6 @@ class Options:
     scrollback_lines: int = 2000
     scrollback_pager: typing.List[str] = ['less', '--chop-long-lines', '--RAW-CONTROL-CHARS', '+INPUT_LINE_NUMBER']
     scrollback_pager_history_size: int = 0
-    second_transparent_bg: typing.Optional[kitty.fast_data_types.Color] = None
     select_by_word_characters: str = '@-./_~?&=%+#'
     select_by_word_characters_forward: str = ''
     selection_background: typing.Optional[kitty.fast_data_types.Color] = Color(255, 250, 205)
@@ -607,6 +612,7 @@ class Options:
     text_composition_strategy: str = 'platform'
     text_fg_override_threshold: float = 0.0
     touch_scroll_multiplier: float = 1.0
+    transparent_background_colors: typing.Tuple[typing.Tuple[kitty.fast_data_types.Color, float], ...] = ()
     undercurl_style: choices_for_undercurl_style = 'thin-sparse'
     underline_hyperlinks: choices_for_underline_hyperlinks = 'hover'
     update_check_interval: float = 24.0
@@ -1035,7 +1041,6 @@ nullable_colors = frozenset({
     'active_border_color'
     'tab_bar_background'
     'tab_bar_margin_color'
-    'second_transparent_bg'
     'selection_foreground'
     'selection_background'
 })

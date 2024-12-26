@@ -127,7 +127,7 @@ def remote_control_allowed(
 
 class PasswordAuthorizer:
 
-    def __init__(self, auth_items: frozenset[str]) -> None:
+    def __init__(self, auth_items: Iterable[str]) -> None:
         self.command_patterns = []
         self.function_checkers = []
         self.name = ''
@@ -279,6 +279,7 @@ completion=type:file relative:conf kwds:-
 default=rc-pass
 A file from which to read the password. Trailing whitespace is ignored. Relative
 paths are resolved from the kitty configuration directory. Use - to read from STDIN.
+Use :code:`fd:num` to read from the file descriptor :code:`num`.
 Used if no :option:`kitten @ --password` is supplied. Defaults to checking for the
 :file:`rc-pass` file in the kitty configuration directory.
 

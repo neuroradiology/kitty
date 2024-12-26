@@ -751,6 +751,20 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
                 WD.screen->cursor_render_info.is_focused = os_window->is_focused;
                 set_os_window_title_from_window(w, os_window);
                 *active_window_bg = window_bg;
+                if (OPT(cursor_trail)) {
+                    if (update_cursor_trail(&tab->cursor_trail, w, now, os_window)) {
+                        needs_render = true;
+                        // A max wait of zero causes key input processing to be
+                        // slow so handle the case of OPT(repaint_delay) == 0, see https://github.com/kovidgoyal/kitty/pull/8066
+                        set_maximum_wait(MAX(OPT(repaint_delay), ms_to_monotonic_t(1ll)));
+                    } else if (OPT(cursor_trail) > now - WD.screen->cursor->position_changed_by_client_at) {
+                        // If update_cursor_trail failed due to time threshold, the trail animation
+                        // should be evaluated again shortly. Schedule next update when enough time
+                        // has passed since the cursor was last moved.
+                        set_maximum_wait(OPT(cursor_trail) - now + WD.screen->cursor->position_changed_by_client_at);
+                    }
+                }
+
             } else {
                 if (WD.screen->cursor_render_info.render_even_when_unfocused) {
                     if (collect_cursor_info(&WD.screen->cursor_render_info, w, now, os_window)) needs_render = true;
@@ -798,16 +812,19 @@ render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, co
     br->is_dirty = false;
     if (TD.screen && os_window->num_tabs >= OPT(tab_bar_min_tabs)) draw_cells(TD.vao_idx, &TD, os_window, true, true, false, NULL);
     unsigned int num_of_visible_windows = 0;
+    Window *active_window = NULL;
     for (unsigned int i = 0; i < tab->num_windows; i++) { if (tab->windows[i].visible) num_of_visible_windows++; }
     for (unsigned int i = 0; i < tab->num_windows; i++) {
         Window *w = tab->windows + i;
         if (w->visible && WD.screen) {
             bool is_active_window = i == tab->active_window;
+            if (is_active_window) active_window = w;
             draw_cells(WD.vao_idx, &WD, os_window, is_active_window, false, num_of_visible_windows == 1, w);
             if (WD.screen->start_visual_bell_at != 0) set_maximum_wait(ANIMATION_SAMPLE_WAIT);
             w->cursor_opacity_at_last_render = WD.screen->cursor_render_info.opacity; w->last_cursor_shape = WD.screen->cursor_render_info.shape;
         }
     }
+    if (OPT(cursor_trail) && tab->cursor_trail.needs_render) draw_cursor_trail(&tab->cursor_trail, active_window);
     if (os_window->live_resize.in_progress) draw_resizing_text(os_window);
     swap_window_buffers(os_window);
     os_window->last_active_tab = os_window->active_tab; os_window->last_num_tabs = os_window->num_tabs; os_window->last_active_window_id = active_window_id;

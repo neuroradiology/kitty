@@ -26,6 +26,7 @@ from typing import (
     Tuple,
     TypeVar,
     Union,
+    cast,
     get_args,
 )
 
@@ -173,7 +174,10 @@ def detach_tab_parse(func: str, rest: str) -> FuncArgsType:
     return func, (rest,)
 
 
-@func_with_args('set_background_opacity', 'goto_layout', 'toggle_layout', 'toggle_tab', 'kitty_shell', 'show_kitty_doc', 'set_tab_title', 'push_keyboard_mode')
+@func_with_args(
+    'set_background_opacity', 'goto_layout', 'toggle_layout', 'toggle_tab', 'kitty_shell', 'show_kitty_doc',
+    'set_tab_title', 'push_keyboard_mode', 'dump_lines_with_attrs',
+)
 def simple_parse(func: str, rest: str) -> FuncArgsType:
     return func, [rest]
 
@@ -558,6 +562,11 @@ def to_cursor_unfocused_shape(x: str) -> int:
             )
         )
 
+def cursor_trail_decay(x: str) -> Tuple[float, float]:
+    fast, slow = map(positive_float, x.split())
+    slow = max(slow, fast)
+    return fast, slow
+
 
 def scrollback_lines(x: str) -> int:
     ans = int(x)
@@ -755,11 +764,17 @@ def active_tab_title_template(x: str) -> Optional[str]:
     return None if x == 'none' else x
 
 
+ClearOn = Literal['next', 'focus']
+default_clear_on: tuple[ClearOn, ...] = 'focus', 'next'
+all_clear_on = get_args(ClearOn)
+
+
 class NotifyOnCmdFinish(NamedTuple):
-    when: str
-    duration: float
-    action: str
-    cmdline: Tuple[str, ...]
+    when: str = 'never'
+    duration: float = 5.0
+    action: str = 'notify'
+    cmdline: Tuple[str, ...] = ()
+    clear_on: tuple[ClearOn, ...] = default_clear_on
 
 
 def notify_on_cmd_finish(x: str) -> NotifyOnCmdFinish:
@@ -772,16 +787,26 @@ def notify_on_cmd_finish(x: str) -> NotifyOnCmdFinish:
         duration = float(parts[1])
     action = 'notify'
     cmdline: Tuple[str, ...] = ()
+    clear_on = default_clear_on
     if len(parts) > 2:
         if parts[2] not in ('notify', 'bell', 'command'):
             raise ValueError(f'Unknown notify_on_cmd_finish action: {parts[2]}')
         action = parts[2]
-        if action == 'command':
+        if action == 'notify':
+            if len(parts) > 3:
+                con: list[ClearOn] = []
+                for x in parts[3].split():
+                    if x not in all_clear_on:
+                        raise ValueError(
+                            f'notify_on_cmd_finish: notify clear_on value "{x}" is invalid. Valid values are: {", ".join(all_clear_on)}')
+                    con.append(cast(ClearOn, x))
+                clear_on = tuple(con)
+        elif action == 'command':
             if len(parts) > 3:
                 cmdline = tuple(to_cmdline(parts[3]))
             else:
                 raise ValueError('notify_on_cmd_finish `command` action needs a command line')
-    return NotifyOnCmdFinish(when, duration, action, cmdline)
+    return NotifyOnCmdFinish(when, duration, action, cmdline, clear_on)
 
 
 def config_or_absolute_path(x: str, env: Optional[Dict[str, str]] = None) -> Optional[str]:
@@ -803,7 +828,7 @@ def remote_control_password(val: str, current_val: Dict[str, str]) -> Iterable[T
             # line of remote_control_password
             raise ValueError('Passwords are not allowed to start with hyphens, ignoring this password')
         if len(parts) == 1:
-            yield "", (parts[0],)
+            yield parts[0], ()
         else:
             yield parts[0], tuple(parts[1:])
 
@@ -1552,6 +1577,23 @@ def cursor_blink_interval(spec: str) -> Tuple[float, EasingFunction, EasingFunct
 
 def visual_bell_duration(spec: str) -> Tuple[float, EasingFunction, EasingFunction]:
     return parse_animation(spec, interval=0.)
+
+
+def transparent_background_colors(spec: str) -> Tuple[Tuple[Color, float], ...]:
+    if not spec:
+        return ()
+    ans: list[tuple[Color, float]] = []
+    seen: dict[Color, int] = {}
+    for part in spec.split():
+        col, sep, alpha = part.partition('@')
+        c = to_color(col)
+        o = max(-1, min(float(alpha) if alpha else -1, 1))
+        if (idx := seen.get(c)) is not None:
+            ans[idx] = c, o
+            continue
+        seen[c] = len(ans)
+        ans.append((c, o))
+    return tuple(ans[:7])
 
 
 def deprecated_hide_window_decorations_aliases(key: str, val: str, ans: Dict[str, Any]) -> None:

@@ -9,11 +9,13 @@
 #include "vt-parser.h"
 #include "graphics.h"
 #include "monotonic.h"
+#include "line-buf.h"
+#include "history.h"
 
 typedef enum ScrollTypes { SCROLL_LINE = -999999, SCROLL_PAGE, SCROLL_FULL } ScrollType;
 
 typedef struct {
-    bool mLNM, mIRM, mDECTCEM, mDECSCNM, mDECOM, mDECAWM, mDECCOLM, mDECARM, mDECCKM,
+    bool mLNM, mIRM, mDECTCEM, mDECSCNM, mDECOM, mDECAWM, mDECCOLM, mDECARM, mDECCKM, mCOLOR_PREFERENCE_NOTIFICATION,
          mBRACKETED_PASTE, mFOCUS_TRACKING, mDECSACE, mHANDLE_TERMIOS_SIGNALS, mINBAND_RESIZE_NOTIFICATION;
     MouseTrackingMode mouse_tracking_mode;
     MouseTrackingProtocol mouse_tracking_protocol;
@@ -97,11 +99,13 @@ typedef struct {
     struct {
         unsigned int cursor_x, cursor_y, scrolled_by;
         index_type lines, columns;
+        color_type cursor_bg;
     } last_rendered;
     bool is_dirty, scroll_changed, reload_all_gpu_data;
     Cursor *cursor;
     Savepoint main_savepoint, alt_savepoint;
     PyObject *callbacks, *test_child;
+    TextCache *text_cache;
     LineBuf *linebuf, *main_linebuf, *alt_linebuf;
     GraphicsManager *grman, *main_grman, *alt_grman;
     HistoryBuf *historybuf;
@@ -168,6 +172,7 @@ typedef struct {
         Selections selections, url_ranges;
     } paused_rendering;
     CharsetState charset;
+    ListOfChars *lc;
 } Screen;
 
 

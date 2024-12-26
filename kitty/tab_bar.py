@@ -27,6 +27,7 @@ from .fast_data_types import (
     set_tab_bar_render_data,
     update_tab_bar_edge_colors,
     viewport_for_window,
+    wcswidth,
 )
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
@@ -118,6 +119,8 @@ class ColorFormatter:
         elif q == 'tab':
             col = color_from_int((self.draw_data.tab_bg if self.which == '4' else self.draw_data.tab_fg)(self.tab_data))
             ans = f'8{color_as_sgr(col)}'
+        elif q.startswith('color'):
+            ans = f'8:5:{int(q[5:])}'
         else:
             if name.startswith('_'):
                 q = f'#{name[1:]}'
@@ -219,6 +222,7 @@ class TabAccessor:
 
 safe_builtins = {
     'max': max, 'min': min, 'str': str, 'repr': repr, 'abs': abs, 'len': len, 'chr': chr, 'ord': ord, 're': re,
+    'wcswidth': wcswidth,
 }
 
 
@@ -599,7 +603,7 @@ class TabBar:
                     blank_rects.append(Border(0, tab_bar.bottom + 1, vw, central.top, bg))
         g = self.window_geometry
         left_bg = right_bg = bg
-        if opts.tab_bar_margin_color is None:
+        if opts.tab_bar_margin_color is None or opts.tab_bar_margin_width == 0:
             left_bg = BorderColor.tab_bar_left_edge_color
             right_bg = BorderColor.tab_bar_right_edge_color
         if g.left > 0:

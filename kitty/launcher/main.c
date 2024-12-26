@@ -6,6 +6,8 @@
  */
 
 #define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
 #include <libgen.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -18,7 +20,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <wchar.h>
-#include <Python.h>
 #include <fcntl.h>
 #include "launcher.h"
 
@@ -217,6 +218,7 @@ run_embedded(RunData *run_data) {
 fail:
     PyConfig_Clear(&config);
     if (PyStatus_IsExit(status)) return status.exitcode;
+    single_instance_main(-1, NULL, NULL);
     Py_ExitStatusException(status);
 }
 
@@ -433,6 +435,7 @@ handle_option_value:
         }
         exit(0);
     }
+    unsetenv("KITTY_SI_DATA");
     if (opts.single_instance) single_instance_main(argc, argv, &opts);
 }
 
@@ -462,5 +465,6 @@ int main(int argc, char *argv[], char* envp[]) {
     if (num < 0 || num >= PATH_MAX) { fprintf(stderr, "Failed to create path to kitty lib\n"); return 1; }
     RunData run_data = {.exe = exe, .exe_dir = exe_dir, .lib_dir = lib, .argc = argc, .argv = argv, .lc_ctype = lc_ctype};
     ret = run_embedded(&run_data);
+    single_instance_main(-1, NULL, NULL);
     return ret;
 }

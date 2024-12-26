@@ -10,7 +10,7 @@ from kitty.options.utils import (
     action_alias, active_tab_title_template, allow_hyperlinks, bell_on_tab, box_drawing_scale,
     clear_all_mouse_actions, clear_all_shortcuts, clipboard_control, clone_source_strategies,
     config_or_absolute_path, copy_on_select, cursor_blink_interval, cursor_text_color,
-    deprecated_adjust_line_height, deprecated_hide_window_decorations_aliases,
+    cursor_trail_decay, deprecated_adjust_line_height, deprecated_hide_window_decorations_aliases,
     deprecated_macos_show_window_title_in_menubar_alias, deprecated_send_text, disable_ligatures,
     edge_width, env, filter_notification, font_features, hide_window_decorations, macos_option_as_alt,
     macos_titlebar_color, menu_map, modify_font, narrow_symbols, notify_on_cmd_finish,
@@ -19,8 +19,9 @@ from kitty.options.utils import (
     shell_integration, store_multiple, symbol_map, tab_activity_symbol, tab_bar_edge,
     tab_bar_margin_height, tab_bar_min_tabs, tab_fade, tab_font_style, tab_separator,
     tab_title_template, titlebar_color, to_cursor_shape, to_cursor_unfocused_shape, to_font_size,
-    to_layout_names, to_modifiers, url_prefixes, url_style, visual_bell_duration,
-    visual_window_select_characters, window_border_width, window_logo_scale, window_size
+    to_layout_names, to_modifiers, transparent_background_colors, url_prefixes, url_style,
+    visual_bell_duration, visual_window_select_characters, window_border_width, window_logo_scale,
+    window_size
 )
 
 
@@ -930,6 +931,15 @@ class Parser:
     def cursor_text_color(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
         ans['cursor_text_color'] = cursor_text_color(val)
 
+    def cursor_trail(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
+        ans['cursor_trail'] = positive_int(val)
+
+    def cursor_trail_decay(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
+        ans['cursor_trail_decay'] = cursor_trail_decay(val)
+
+    def cursor_trail_start_threshold(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
+        ans['cursor_trail_start_threshold'] = positive_int(val)
+
     def cursor_underline_thickness(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
         ans['cursor_underline_thickness'] = positive_float(val)
 
@@ -1193,9 +1203,6 @@ class Parser:
     def scrollback_pager_history_size(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
         ans['scrollback_pager_history_size'] = scrollback_pager_history_size(val)
 
-    def second_transparent_bg(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
-        ans['second_transparent_bg'] = to_color_or_none(val)
-
     def select_by_word_characters(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
         ans['select_by_word_characters'] = str(val)
 
@@ -1325,6 +1332,9 @@ class Parser:
 
     def touch_scroll_multiplier(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
         ans['touch_scroll_multiplier'] = float(val)
+
+    def transparent_background_colors(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
+        ans['transparent_background_colors'] = transparent_background_colors(val)
 
     def undercurl_style(self, val: str, ans: typing.Dict[str, typing.Any]) -> None:
         val = val.lower()

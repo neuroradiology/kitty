@@ -7,7 +7,7 @@ from collections import defaultdict
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager, suppress
 from itertools import count
-from typing import TYPE_CHECKING, DefaultDict, Optional
+from typing import TYPE_CHECKING, DefaultDict, Optional, TypedDict
 
 import kitty.fast_data_types as fast_data_types
 
@@ -15,10 +15,6 @@ from .constants import handled_signals, is_freebsd, is_macos, kitten_exe, kitty_
 from .types import run_once
 from .utils import cmdline_for_hold, log_error, which
 
-try:
-    from typing import TypedDict
-except ImportError:
-    TypedDict = dict
 if TYPE_CHECKING:
     from .window import CwdRequest
 
@@ -30,6 +26,8 @@ if is_macos:
     from kitty.fast_data_types import process_group_map as _process_group_map
 
     def cwd_of_process(pid: int) -> str:
+        # The underlying code on macos returns a path with symlinks resolved
+        # anyway but we use realpath for extra safety.
         return os.path.realpath(_cwd(pid))
 
     def process_group_map() -> DefaultDict[int, list[int]]:
@@ -56,6 +54,8 @@ else:
             return os.path.realpath(ans)
     else:
         def cwd_of_process(pid: int) -> str:
+            # We use realpath instead of readlink to match macOS behavior where
+            # the underlying OS API returns real paths.
             ans = f'/proc/{pid}/cwd'
             return os.path.realpath(ans)
 
@@ -211,11 +211,15 @@ class Child:
         is_clone_launch: str = '',
         add_listen_on_env_var: bool = True,
         hold: bool = False,
+        pass_fds: tuple[int, ...] = (),
+        remote_control_fd: int = -1,
     ):
         self.is_clone_launch = is_clone_launch
         self.id = next(child_counter)
         self.add_listen_on_env_var = add_listen_on_env_var
         self.argv = list(argv)
+        self.pass_fds = pass_fds
+        self.remote_control_fd = remote_control_fd
         if cwd_from:
             try:
                 cwd = cwd_from.modify_argv_for_launch_with_cwd(self.argv, env) or cwd
@@ -244,10 +248,13 @@ class Child:
         env['COLORTERM'] = 'truecolor'
         env['KITTY_PID'] = getpid()
         env['KITTY_PUBLIC_KEY'] = boss.encryption_public_key
-        if self.add_listen_on_env_var and boss.listening_on:
+        if self.remote_control_fd > -1:
+            env['KITTY_LISTEN_ON'] = f'fd:{self.remote_control_fd}'
+        elif self.add_listen_on_env_var and boss.listening_on:
             env['KITTY_LISTEN_ON'] = boss.listening_on
         else:
             env.pop('KITTY_LISTEN_ON', None)
+        env.pop('KITTY_STDIO_FORWARDED', None)
         if self.cwd:
             # needed in case cwd is a symlink, in which case shells
             # can use it to display the current directory name rather
@@ -260,8 +267,6 @@ class Child:
         elif opts.terminfo_type == 'direct':
             env['TERMINFO'] = base64_terminfo_data()
         env['KITTY_INSTALLATION_DIR'] = kitty_base_dir
-        if opts.forward_stdio:
-            env['KITTY_STDIO_FORWARDED'] = '3'
         self.unmodified_argv = list(self.argv)
         if not self.should_run_via_run_shell_kitten and 'disabled' not in opts.shell_integration:
             from .shell_integration import modify_shell_environ
@@ -293,6 +298,9 @@ class Child:
         self.final_env = self.get_final_env()
         argv = list(self.argv)
         cwd = self.cwd
+        pass_fds = self.pass_fds
+        if self.remote_control_fd > -1:
+            pass_fds += self.remote_control_fd,
         if self.should_run_via_run_shell_kitten:
             # bash will only source ~/.bash_profile if it detects it is a login
             # shell (see the invocation section of the bash man page), which it
@@ -313,12 +321,14 @@ class Child:
             if ksi == 'invalid':
                 ksi = 'enabled'
             argv = [kitten_exe(), 'run-shell', '--shell', shlex.join(argv), '--shell-integration', ksi]
-            if is_macos:
+            if is_macos and not pass_fds and not opts.forward_stdio:
                 # In addition for getlogin() to work we need to run the shell
                 # via the /usr/bin/login wrapper, sigh.
                 # And login on macOS looks for .hushlogin in CWD instead of
                 # HOME, bloody idiotic so we cant cwd when running it.
                 # https://github.com/kovidgoyal/kitty/issues/6511
+                # login closes inherited file descriptors so dont use it when
+                # forward_stdio or pass_fds are used.
                 import pwd
                 user = pwd.getpwuid(os.geteuid()).pw_name
                 if cwd:
@@ -333,7 +343,7 @@ class Child:
         env = tuple(f'{k}={v}' for k, v in self.final_env.items())
         pid = fast_data_types.spawn(
             final_exe, cwd, tuple(argv), env, master, slave, stdin_read_fd, stdin_write_fd,
-            ready_read_fd, ready_write_fd, tuple(handled_signals), kitten_exe(), opts.forward_stdio)
+            ready_read_fd, ready_write_fd, tuple(handled_signals), kitten_exe(), opts.forward_stdio, pass_fds)
         os.close(slave)
         self.pid = pid
         self.child_fd = master

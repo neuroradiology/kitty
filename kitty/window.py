@@ -20,6 +20,7 @@ from typing import (
     Any,
     Callable,
     Deque,
+    Literal,
     NamedTuple,
     Optional,
     Union,
@@ -57,6 +58,7 @@ from .fast_data_types import (
     add_timer,
     add_window,
     base64_decode,
+    buffer_keys_in_window,
     cell_size_for_window,
     click_mouse_cmd_output,
     click_mouse_url,
@@ -67,6 +69,7 @@ from .fast_data_types import (
     get_mouse_data_for_window,
     get_options,
     is_css_pointer_name_valid,
+    is_modifier_key,
     last_focused_os_window_id,
     mark_os_window_dirty,
     monotonic,
@@ -75,6 +78,7 @@ from .fast_data_types import (
     pointer_name_to_css_name,
     pt_to_px,
     replace_c0_codes_except_nl_space_tab,
+    set_redirect_keys_to_overlay,
     set_window_logo,
     set_window_padding,
     set_window_render_data,
@@ -115,13 +119,14 @@ if TYPE_CHECKING:
 
     from .fast_data_types import MousePosition
     from .file_transmission import FileTransmission
+    from .notifications import OnlyWhen
 
 
 class CwdRequestType(Enum):
-    current: int = auto()
-    last_reported: int = auto()
-    oldest: int = auto()
-    root: int = auto()
+    current = auto()
+    last_reported = auto()
+    oldest = auto()
+    root = auto()
 
 
 class CwdRequest:
@@ -447,17 +452,46 @@ def process_remote_print(msg: memoryview) -> str:
     return replace_c0_codes_except_nl_space_tab(base64_decode(msg)).decode('utf-8', 'replace')
 
 
+def transparent_background_color_control(cp: ColorProfile, responses: dict[str, str], index: int, key: str, sep: str, val: str) -> None:
+    if sep == '=':
+        if val == '?':
+            if index > 8:
+                responses[key] = '?'
+            else:
+                c = cp.get_transparent_background_color(index - 1)
+                if c is None:
+                    responses[key] = ''
+                else:
+                    opacity = max(0, min(c.alpha / 255.0, 1))
+                    responses[key] = f'rgb:{c.red:02x}/{c.green:02x}/{c.blue:02x}@{opacity:.4f}'
+        elif index <= 8:
+            col, _, o = val.partition('@')
+            try:
+                opacity = float(o)
+            except Exception:
+                opacity = -1.0
+            c = to_color(col)
+            if c is not None:
+                cp.set_transparent_background_color(index - 1, c, opacity)
+    elif index <= 8:
+        cp.set_transparent_background_color(index - 1)
+
+
 def color_control(cp: ColorProfile, code: int, value: Union[str, bytes, memoryview] = '') -> str:
     if isinstance(value, (bytes, memoryview)):
         value = str(value, 'utf-8', 'replace')
-    responses = {}
+    responses: dict[str, str] = {}
     for rec in value.split(';'):
         key, sep, val = rec.partition('=')
+        if key.startswith('transparent_background_color'):
+            index = int(key[len('transparent_background_color'):])
+            transparent_background_color_control(cp, responses, index, key, sep, val)
+            continue
         attr = {
             'foreground': 'default_fg', 'background': 'default_bg',
             'selection_background': 'highlight_bg', 'selection_foreground': 'highlight_fg',
             'cursor': 'cursor_color', 'cursor_text': 'cursor_text_color',
-            'visual_bell': 'visual_bell_color', 'second_transparent_background': 'second_transparent_bg',
+            'visual_bell': 'visual_bell_color',
         }.get(key, '')
         colnum = -1
         with suppress(Exception):
@@ -480,6 +514,7 @@ def color_control(cp: ColorProfile, code: int, value: Union[str, bytes, memoryvi
             else:
                 if attr:
                     if val:
+                        val = val.partition('@')[0]
                         col = to_color(val)
                         if col is not None:
                             setattr(cp, attr, col)
@@ -488,6 +523,7 @@ def color_control(cp: ColorProfile, code: int, value: Union[str, bytes, memoryvi
                             setattr(cp, attr, None)
                 else:
                     if 0 <= colnum <= 255:
+                        val = val.partition('@')[0]
                         col = to_color(val)
                         if col is not None:
                             cp.set_color(colnum, color_as_int(col))
@@ -588,6 +624,7 @@ class Window:
             self.watchers.add(global_watchers())
         else:
             self.watchers = global_watchers().copy()
+        self.keys_redirected_till_ready_from: int = 0
         self.last_focused_at = 0.
         self.is_focused: bool = False
         self.last_resized_at = 0.
@@ -597,6 +634,7 @@ class Window:
         self.current_mouse_event_button = 0
         self.current_clipboard_read_ask: Optional[bool] = None
         self.last_cmd_output_start_time = 0.
+        self.last_cmd_end_notification: Optional[tuple[int, 'OnlyWhen']] = None
         self.open_url_handler: 'OpenUrlHandler' = None
         self.last_cmd_cmdline = ''
         self.last_cmd_exit_status = 0
@@ -774,7 +812,7 @@ class Window:
         return tab.overlay_parent(self)
 
     @property
-    def current_colors(self) -> dict[str, Optional[int]]:
+    def current_colors(self) -> dict[str, Union[int, None, tuple[tuple[Color, float], ...]]]:
         return self.screen.color_profile.as_dict()
 
     @property
@@ -955,11 +993,16 @@ class Window:
             sk = sk.resolve_kitty_mod(km)
             events.append(KeyEvent(key=sk.key, mods=sk.mods, action=GLFW_REPEAT if human_key == prev else GLFW_PRESS))
             prev = human_key
+        scroll_needed = False
         for ev in events + [KeyEvent(key=x.key, mods=x.mods, action=GLFW_RELEASE) for x in reversed(events)]:
             enc = self.encoded_key(ev)
             if enc:
                 self.write_to_child(enc)
+                if ev.action != GLFW_RELEASE and not is_modifier_key(ev.key):
+                    scroll_needed = True
                 passthrough = False
+        if scroll_needed:
+            self.scroll_end()
         return passthrough
 
     def send_key_sequence(self, *keys: KeyEvent, synthesize_release_events: bool = True) -> None:
@@ -974,9 +1017,10 @@ class Window:
                     self.write_to_child(enc)
 
     @ac('debug', 'Show a dump of the current lines in the scrollback + screen with their line attributes')
-    def dump_lines_with_attrs(self) -> None:
+    def dump_lines_with_attrs(self, which_screen: Literal['main', 'alternate', 'current'] = 'current') -> None:
         strings: list[str] = []
-        self.screen.dump_lines_with_attrs(strings.append)
+        ws = 0 if which_screen == 'main' else (1 if which_screen == 'alternate' else -1)
+        self.screen.dump_lines_with_attrs(strings.append, ws)
         text = ''.join(strings)
         get_boss().display_scrollback(self, text, title='Dump of lines', report_cursor=False)
 
@@ -1062,6 +1106,13 @@ class Window:
                 log_error(f'Ignoring unknown OSC 777: {raw_data}')
                 return  # unknown OSC 777
             raw_data = raw_data[len('notify;'):]
+        if osc_code == 9 and raw_data.startswith('4;'):
+            # This is probably the Windows Terminal "progress reporting" conflicting
+            # implementation which sadly some thoughtless people have
+            # implemented in unix CLI programs. So ignore it rather than
+            # spamming the user with continuous notifications. See for example:
+            # https://github.com/kovidgoyal/kitty/issues/8011
+            return
         get_boss().notification_manager.handle_notification_cmd(self.id, osc_code, raw_data)
 
     def on_mouse_event(self, event: dict[str, Any]) -> bool:
@@ -1167,6 +1218,12 @@ class Window:
                 tab = self.tabref()
                 if tab is not None:
                     tab.relayout_borders()
+            if self.last_cmd_end_notification is not None:
+                from .notifications import OnlyWhen
+                opts = get_options()
+                if self.last_cmd_end_notification[1] in (OnlyWhen.unfocused, OnlyWhen.invisible) and 'focus' in opts.notify_on_cmd_finish.clear_on:
+                    get_boss().notification_manager.close_notification(self.last_cmd_end_notification[0])
+                    self.last_cmd_end_notification = None
         elif self.os_window_id == current_focused_os_window_id():
             # Cancel IME composition after loses focus
             update_ime_position_for_window(self.id, False, -1)
@@ -1268,6 +1325,15 @@ class Window:
         if default_bg_changed:
             get_boss().default_bg_changed_for(self.id)
 
+    def on_color_scheme_preference_change(self) -> None:
+        if self.screen.color_preference_notification:
+            self.report_color_scheme_preference()
+
+    def report_color_scheme_preference(self) -> None:
+        cp = self.screen.color_profile
+        n = 1 if cp.default_bg.is_dark else 2
+        self.screen.send_escape_code_to_child(ESC_CSI, f'?997;{n}n')
+
     def set_color_table_color(self, code: int, bvalue: Optional[memoryview] = None) -> None:
         value = str(bvalue or b'', 'utf-8', 'replace')
         cp = self.screen.color_profile
@@ -1353,6 +1419,10 @@ class Window:
         tab = boss.tab_for_window(self)
         if tab is not None:
             tab.move_window_to_top_of_group(self)
+        if self.keys_redirected_till_ready_from:
+            set_redirect_keys_to_overlay(self.os_window_id, self.tab_id, self.keys_redirected_till_ready_from, 0)
+            buffer_keys_in_window(self.os_window_id, self.tab_id, self.id, False)
+            self.keys_redirected_till_ready_from = 0
 
     def append_remote_data(self, msgb: memoryview) -> str:
         if not msgb:
@@ -1464,7 +1534,7 @@ class Window:
             "is_start": False, "time": end_time, 'cmdline': self.last_cmd_cmdline, 'exit_status': self.last_cmd_exit_status})
 
         opts = get_options()
-        when, duration, action, notify_cmdline = opts.notify_on_cmd_finish
+        when, duration, action, notify_cmdline, _ = opts.notify_on_cmd_finish
 
         if last_cmd_output_duration >= duration and when != 'never':
             from .notifications import OnlyWhen
@@ -1477,7 +1547,13 @@ class Window:
             if not nm.is_notification_allowed(cmd, self.id):
                 return
             if action == 'notify':
-                nm.notify_with_command(cmd, self.id)
+                if self.last_cmd_end_notification is not None:
+                    if 'next' in opts.notify_on_cmd_finish.clear_on:
+                        nm.close_notification(self.last_cmd_end_notification[0])
+                    self.last_cmd_end_notification = None
+                notification_id = nm.notify_with_command(cmd, self.id)
+                if notification_id is not None:
+                    self.last_cmd_end_notification = notification_id, cmd.only_when
             elif action == 'bell':
                 self.screen.bell()
             elif action == 'command':

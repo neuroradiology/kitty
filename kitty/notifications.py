@@ -118,9 +118,9 @@ class IconDataCache:
 
 
 class Urgency(Enum):
-    Low: int = 0
-    Normal: int = 1
-    Critical: int = 2
+    Low = 0
+    Normal = 1
+    Critical = 2
 
 
 class PayloadType(Enum):
@@ -197,6 +197,8 @@ class EncodedDataStore:
             self.data_store(decoded)
 
     def flush_encoded_data(self) -> None:
+        if self.decoder.needs_more_data():
+            log_error('Received incomplete encoded data for notification request')
         self.decoder.reset()
 
     def finalise(self) -> bytes:
@@ -827,7 +829,7 @@ class NotificationManager:
 
     def __init__(
         self,
-        desktop_integration: Optional[DesktopIntegration] = None,
+        desktop_integration: Union[MacOSIntegration, FreeDesktopIntegration, None] = None,
         channel: Channel = Channel(),
         log: Log = Log(),
         debug: bool = False,
@@ -1059,6 +1061,9 @@ class NotificationManager:
             parts = raw.split(';', 1)
             n.title, n.body = parts[0], (parts[1] if len(parts) > 1 else '')
             self.notify_with_command(n, channel_id)
+
+    def close_notification(self, desktop_notification_id: int) -> None:
+        self.desktop_integration.close_notification(desktop_notification_id)
 
     def cleanup(self) -> None:
         del self.icon_data_cache

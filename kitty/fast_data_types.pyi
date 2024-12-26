@@ -14,11 +14,14 @@ from kitty.typing import EdgeLiteral, NotRequired, ReadableBuffer, WriteableBuff
 # Constants {{{
 GLFW_LAYER_SHELL_NONE: int
 GLFW_LAYER_SHELL_PANEL: int
+GLFW_LAYER_SHELL_TOP: int
+GLFW_LAYER_SHELL_OVERLAY: int
 GLFW_LAYER_SHELL_BACKGROUND: int
 GLFW_EDGE_TOP: int
 GLFW_EDGE_BOTTOM: int
 GLFW_EDGE_LEFT: int
 GLFW_EDGE_RIGHT: int
+GLFW_EDGE_NONE: int
 GLFW_FOCUS_NOT_ALLOWED: int
 GLFW_FOCUS_EXCLUSIVE: int
 GLFW_FOCUS_ON_DEMAND: int
@@ -296,6 +299,7 @@ FC_WIDTH_NORMAL: int
 FC_SLANT_ROMAN: int
 FC_SLANT_ITALIC: int
 BORDERS_PROGRAM: int
+TRAIL_PROGRAM: int
 PRESS: int
 RELEASE: int
 DRAG: int
@@ -540,6 +544,8 @@ def add_borders_rect(
 def init_borders_program() -> None:
     pass
 
+def init_trail_program() -> None:
+    pass
 
 def os_window_has_background_image(os_window_id: int) -> bool:
     pass
@@ -741,6 +747,10 @@ class Color:
         pass
 
     @property
+    def is_dark(self) -> bool:
+        pass
+
+    @property
     def as_sgr(self) -> str:
         pass
 
@@ -809,14 +819,9 @@ class ColorProfile:
     @visual_bell_color.setter
     def visual_bell_color(self, val: Union[None|int|Color]) -> None: ...
 
-    @property
-    def second_transparent_bg(self) -> Optional[Color]: ...
-    @second_transparent_bg.setter
-    def second_transparent_bg(self, val: Union[None|int|Color]) -> None: ...
-
     def __init__(self, opts: Optional[Options] = None): ...
 
-    def as_dict(self) -> Dict[str, Optional[int]]:
+    def as_dict(self) -> Dict[str, int | None | tuple[tuple[Color, float], ...]]:
         pass
 
     def as_color(self, val: int) -> Optional[Color]:
@@ -833,9 +838,13 @@ class ColorProfile:
 
     def reload_from_opts(self, opts: Optional[Options] = None) -> None: ...
 
+    def get_transparent_background_color(self, index: int) -> Color | None: ...
+    def set_transparent_background_color(self, index: int, color: Color | None = None, opacity: float | None = None) -> None: ...
+
 
 def patch_color_profiles(
-    spec: Dict[str, Optional[int]], profiles: Tuple[ColorProfile, ...], change_configured: bool
+        spec: Dict[str, Optional[int]], transparent_background_colors: tuple[tuple[Color, float], ...],
+        profiles: Tuple[ColorProfile, ...], change_configured: bool
 ) -> None:
     pass
 
@@ -1162,6 +1171,8 @@ class LineBuf:
     def line(self, num: int) -> Line:
         pass
 
+    def as_ansi(self, callback: Callable[[str], None]) -> None: ...
+
 
 class Cursor:
     x: int
@@ -1184,6 +1195,7 @@ class Screen:
     linebuf: LineBuf
     in_bracketed_paste_mode: bool
     in_band_resize_notification: bool
+    color_preference_notification: bool
     cursor_visible: bool
     scrolled_by: int
     cursor: Cursor
@@ -1202,6 +1214,10 @@ class Screen:
             test_child: Any = None
     ):
         pass
+
+    def test_create_write_buffer(self) -> memoryview: ...
+    def test_commit_write_buffer(self, inp: memoryview, output: memoryview) -> int: ...
+    def test_parse_written_data(self, dump_callback: None = None) -> None: ...
 
     def cursor_at_prompt(self) -> bool:
         pass
@@ -1224,7 +1240,7 @@ class Screen:
     def draw(self, text: str) -> None:
         pass
 
-    def dump_lines_with_attrs(self, acc: Callable[[str], None]) -> None:
+    def dump_lines_with_attrs(self, acc: Callable[[str], None], which_screen: int = -1) -> None:
         pass
 
     def apply_sgr(self, text: str) -> None:
@@ -1461,6 +1477,7 @@ def spawn(
     handled_signals: Tuple[int, ...],
     kitten_exe: str,
     forward_stdio: bool,
+    pass_fds: tuple[int, ...],
 ) -> int:
     pass
 
@@ -1671,7 +1688,6 @@ class SingleKey:
 
 def set_use_os_log(yes: bool) -> None: ...
 def get_docs_ref_map() -> bytes: ...
-def clearenv() -> None: ...
 def set_clipboard_data_types(ct: int, mime_types: Tuple[str, ...]) -> None: ...
 def get_clipboard_mime(ct: int, mime: Optional[str], callback: Callable[[bytes], None]) -> None: ...
 def run_with_activation_token(func: Callable[[str], None]) -> bool: ...
@@ -1703,6 +1719,9 @@ def opengl_version_string() -> str: ...
 def systemd_move_pid_into_new_scope(pid: int, scope_name: str, description: str) -> str: ...
 def play_desktop_sound_async(name: str, event_id: str = 'test sound', is_path: bool = False, theme_name: str = '') -> str: ...
 def cocoa_play_system_sound_by_id_async(sound_id: int) -> None: ...
+def glfw_get_system_color_theme(query_if_unintialized: bool = True) -> Literal['light', 'dark', 'no_preference']: ...
+def set_redirect_keys_to_overlay(os_window_id: int, tab_id: int, window_id: int, overlay_window_id: int) -> None: ...
+def buffer_keys_in_window(os_window_id: int, tab_id: int, window_id: int, enabled: bool = True) -> bool: ...
 
 class MousePosition(TypedDict):
     cell_x: int
@@ -1719,7 +1738,8 @@ class StreamingBase64Decoder:
     def decode(self, data: ReadableBuffer) -> bytes: ...
     # decode the specified data, return number of bytes written dest should be as large as src (technically 3/4 src + 2)
     def decode_into(self, dest: WriteableBuffer, src: ReadableBuffer) -> int: ...
-
+    # whether the data stream decoded so far is complete or not
+    def needs_more_data(self) -> bool: ...
 
 
 class StreamingBase64Encodeer:

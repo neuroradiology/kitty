@@ -17,8 +17,9 @@ from kittens.tui.operations import colored, styled
 
 from .child import cmdline_of_pid
 from .cli import version
+from .colors import theme_colors
 from .constants import extensions_dir, is_macos, is_wayland, kitty_base_dir, kitty_exe, shell_path
-from .fast_data_types import Color, SingleKey, current_fonts, num_users, opengl_version_string, wayland_compositor_data
+from .fast_data_types import Color, SingleKey, current_fonts, glfw_get_system_color_theme, num_users, opengl_version_string, wayland_compositor_data
 from .options.types import Options as KittyOpts
 from .options.types import defaults
 from .options.utils import KeyboardMode, KeyDefinition
@@ -70,7 +71,7 @@ def compare_maps(
 
 
 
-def compare_opts(opts: KittyOpts, print: Print) -> None:
+def compare_opts(opts: KittyOpts, global_shortcuts: dict[str, SingleKey] | None, print: Print) -> None:
     from .config import load_config
     print()
     print('Config options different from defaults:')
@@ -134,6 +135,11 @@ def compare_opts(opts: KittyOpts, print: Print) -> None:
         initial = {as_sc(k, v[0]): as_str(v) for k, v in initial_.keymap.items()}
         final_ = opts.keyboard_modes.get(kmn, KeyboardMode(kmn))
         final = {as_sc(k, v[0]): as_str(v) for k, v in final_.keymap.items()}
+        if not kmn and global_shortcuts:
+            for action, sk in global_shortcuts.items():
+                sc = Shortcut((sk,))
+                if sc not in final:
+                    final[sc] = action
         compare_maps(final, opts.kitty_mod, initial, default_opts.kitty_mod, print, mode_name=kmn)
     new_keyboard_modes = set(opts.keyboard_modes) - set(default_opts.keyboard_modes)
     for kmn in new_keyboard_modes:
@@ -229,7 +235,7 @@ def compositor_name() -> str:
     return ans
 
 
-def debug_config(opts: KittyOpts) -> str:
+def debug_config(opts: KittyOpts, global_shortcuts: dict[str, SingleKey] | None = None) -> str:
     from io import StringIO
     out = StringIO()
     p = partial(print, file=out)
@@ -270,13 +276,14 @@ def debug_config(opts: KittyOpts) -> str:
     p(yellow('  base dir:'), kitty_base_dir)
     p(yellow('  extensions dir:'), extensions_dir)
     p(yellow('  system shell:'), shell_path)
+    p(f'System color scheme: {green(glfw_get_system_color_theme())}. Applied color theme type: {yellow(theme_colors.applied_theme or "none")}')
     if opts.config_paths:
         p(green('Loaded config files:'))
         p(' ', '\n  '.join(opts.config_paths))
     if opts.config_overrides:
         p(green('Loaded config overrides:'))
         p(' ', '\n  '.join(opts.config_overrides))
-    compare_opts(opts, p)
+    compare_opts(opts, global_shortcuts, p)
     p()
     p(green('Important environment variables seen by the kitty process:'))
 
