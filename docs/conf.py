@@ -29,7 +29,7 @@ if kitty_src not in sys.path:
 
 from kitty.conf.types import Definition, expand_opt_references  # noqa
 from kitty.constants import str_version, website_url # noqa
-from kitty.fast_data_types import Shlex  # noqa
+from kitty.fast_data_types import Shlex, TEXT_SIZE_CODE  # noqa
 
 # config {{{
 # -- Project information -----------------------------------------------------
@@ -62,7 +62,7 @@ extensions = [
     'sphinx.ext.extlinks',
     'sphinx_copybutton',
     'sphinx_inline_tabs',
-    "sphinxext.opengraph",
+    'sphinxext.opengraph',
 ]
 
 # URL for OpenGraph tags
@@ -119,6 +119,7 @@ def go_version(go_mod_path: str) -> str:  # {{{
 string_replacements = {
     '_kitty_install_cmd': 'curl -L https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/stdin',
     '_build_go_version': go_version('../go.mod'),
+    '_text_size_code': str(TEXT_SIZE_CODE),
 }
 
 
@@ -351,7 +352,7 @@ def write_remote_control_protocol_docs() -> None:  # {{{
 
 def replace_string(app: Any, docname: str, source: List[str]) -> None:  # {{{
     src = source[0]
-    for k, v in app.config.string_replacements.items():
+    for k, v in string_replacements.items():
         src = src.replace(k, v)
     source[0] = src
 # }}}
@@ -642,33 +643,10 @@ def monkeypatch_man_writer() -> None:
     '''
     Monkeypatch the docutils man translator to be nicer
     '''
-    from docutils.nodes import Element
-    from docutils.writers.manpage import Table, Translator
+    from docutils.nodes import figure
+    from docutils.writers.manpage import Translator
     from sphinx.writers.manpage import ManualPageTranslator
 
-    # Generate nicer tables https://sourceforge.net/p/docutils/bugs/475/
-    class PatchedTable(Table):  # type: ignore
-        _options: list[str]
-        def __init__(self) -> None:
-            super().__init__()
-            self.needs_border_removal = self._options == ['center']
-            if self.needs_border_removal:
-                self._options = ['box', 'center']
-
-        def as_list(self) -> list[str]:
-            ans: list[str] = super().as_list()
-            if self.needs_border_removal:
-                # remove side and top borders as we use box in self._options
-                ans[2] = ans[2][1:]
-                a, b = ans[2].rpartition('|')[::2]
-                ans[2] = a + b
-                if ans[3] == '_\n':
-                    del ans[3]  # top border
-                del ans[-2] # bottom border
-            return ans
-    def visit_table(self: ManualPageTranslator, node: object) -> None:
-        setattr(self, '_active_table', PatchedTable())
-    setattr(ManualPageTranslator, 'visit_table', visit_table)
 
     # Improve header generation
     def header(self: ManualPageTranslator) -> str:
@@ -685,13 +663,13 @@ def monkeypatch_man_writer() -> None:
 
     setattr(ManualPageTranslator, 'header', header)
 
-    def visit_image(self: ManualPageTranslator, node: Element) -> None:
+    def visit_image(self: ManualPageTranslator, node: figure) -> None:
         pass
 
-    def depart_image(self: ManualPageTranslator, node: Element) -> None:
+    def depart_image(self: ManualPageTranslator, node: figure) -> None:
         pass
 
-    def depart_figure(self: ManualPageTranslator, node: Element) -> None:
+    def depart_figure(self: ManualPageTranslator, node: figure) -> None:
         self.body.append(' (images not supported)\n')
         Translator.depart_figure(self, node)
 
@@ -699,8 +677,8 @@ def monkeypatch_man_writer() -> None:
     setattr(ManualPageTranslator, 'depart_image', depart_image)
     setattr(ManualPageTranslator, 'depart_figure', depart_figure)
 
-    orig_astext = Translator.astext
-    def astext(self: Translator) -> Any:
+    orig_astext = getattr(ManualPageTranslator, 'astext')
+    def astext(self: ManualPageTranslator) -> Any:
         b = []
         for line in self.body:
             if line.startswith('.SH'):
@@ -709,9 +687,9 @@ def monkeypatch_man_writer() -> None:
                 parts[0] = parts[0].capitalize()
                 line = x + ' ' + '\n'.join(parts)
             b.append(line)
-        self.body = b
+        setattr(self, 'body', b)
         return orig_astext(self)
-    setattr(Translator, 'astext', astext)
+    setattr(ManualPageTranslator, 'astext', astext)
 
 
 def setup_man_pages() -> None:
@@ -768,7 +746,6 @@ def setup(app: Any) -> None:
     write_remote_control_protocol_docs()
     write_color_names_table()
     write_conf_docs(app, kn)
-    app.add_config_value('string_replacements', {}, True)
     app.connect('source-read', replace_string)
     app.add_config_value('analytics_id', '', 'env')
     app.connect('html-page-context', add_html_context)

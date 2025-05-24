@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/shirou/gopsutil/v3/process"
@@ -68,7 +69,7 @@ func Abspath(path string) string {
 
 var KittyExe = sync.OnceValue(func() string {
 	if kitty_pid := os.Getenv("KITTY_PID"); kitty_pid != "" {
-		if kp, err := strconv.Atoi(kitty_pid); err == nil {
+		if kp, err := strconv.ParseInt(kitty_pid, 10, 32); err == nil {
 			if p, err := process.NewProcess(int32(kp)); err == nil {
 				if exe, err := p.Exe(); err == nil && filepath.IsAbs(exe) && filepath.Base(exe) == "kitty" {
 					return exe
@@ -163,7 +164,7 @@ func macos_user_cache_dir() string {
 		if err != nil {
 			return false
 		}
-		stat, ok := s.Sys().(unix.Stat_t)
+		stat, ok := s.Sys().(syscall.Stat_t)
 		return ok && s.IsDir() && int(stat.Uid) == os.Geteuid() && s.Mode().Perm() == 0o700 && unix.Access(m, unix.X_OK|unix.W_OK|unix.R_OK) == nil
 	}
 

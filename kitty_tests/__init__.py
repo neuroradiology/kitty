@@ -15,11 +15,10 @@ import time
 from contextlib import contextmanager, suppress
 from functools import wraps
 from pty import CHILD, STDIN_FILENO, STDOUT_FILENO, fork
-from typing import Optional
 from unittest import TestCase
 
 from kitty.config import finalize_keys, finalize_mouse_mappings
-from kitty.fast_data_types import Cursor, HistoryBuf, LineBuf, Screen, get_options, monotonic, set_options
+from kitty.fast_data_types import TEXT_SIZE_CODE, Cursor, HistoryBuf, LineBuf, Screen, get_options, monotonic, set_options
 from kitty.options.parse import merge_result_dicts
 from kitty.options.types import Options, defaults
 from kitty.rgb import to_color
@@ -35,6 +34,13 @@ def parse_bytes(screen, data, dump_callback=None):
         s = screen.test_commit_write_buffer(data, dest)
         data = data[s:]
         screen.test_parse_written_data(dump_callback)
+
+
+def draw_multicell(
+    screen: Screen, text: str, width: int = 0, scale: int = 1, subscale_n: int = 0, subscale_d: int = 0, vertical_align: int = 0, horizontal_align: int = 0
+    ) -> None:
+    cmd = f'\x1b]{TEXT_SIZE_CODE};w={width}:s={scale}:n={subscale_n}:d={subscale_d}:v={vertical_align}:h={horizontal_align};{text}\a'
+    parse_bytes(screen, cmd.encode())
 
 
 class Callbacks:
@@ -86,7 +92,7 @@ class Callbacks:
     def color_profile_popped(self, x) -> None:
         pass
 
-    def cmd_output_marking(self, is_start: Optional[bool], data: str = '') -> None:
+    def cmd_output_marking(self, is_start: bool | None, data: str = '') -> None:
         if is_start:
             self.last_cmd_at = monotonic()
             self.last_cmd_cmdline = decode_cmdline(data) if data else data
@@ -209,18 +215,24 @@ def filled_history_buf(ynum=5, xnum=5, cursor=Cursor()):
     return ans
 
 
-def retry_on_failure(max_attempts=2, sleep_duration=2):
+is_ci = os.environ.get('CI') == 'true'
+max_attempts = 4 if is_ci else 2
+sleep_duration = 4 if is_ci else 2
+
+
+def retry_on_failure(max_attempts=max_attempts, sleep_duration=sleep_duration):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
             for attempt in range(max_attempts):
                 try:
                     return func(*args, **kwargs)
-                except Exception as e:
+                except Exception:
                     if attempt < max_attempts - 1: # Don't sleep on the last attempt
                         time.sleep(sleep_duration)
+                        print(f'{func.__name__} failed, retrying in {sleep_duration} seconds', file=sys.stderr)
                     else:
-                        raise e # Re-raise the last exception
+                        raise # Re-raise the last exception
         return wrapper
     return decorator
 
@@ -229,7 +241,7 @@ class BaseTest(TestCase):
 
     ae = TestCase.assertEqual
     maxDiff = 2048
-    is_ci = os.environ.get('CI') == 'true'
+    is_ci = is_ci
 
     def rmtree_ignoring_errors(self, tdir):
         try:
@@ -395,13 +407,13 @@ class PTY:
                 self.process_input_from_child(timeout=end_time - time.monotonic())
             except OSError as e:
                 if not q():
-                    raise Exception(f'Failed to read from pty with error: {e}. Screen contents:  \n {repr(self.screen_contents())}') from e
+                    raise Exception(f'Failed to read from pty with error: {e}. {self.screen_contents_for_error()}') from e
                 return
         if not q():
             msg = 'The condition was not met'
             if timeout_msg is not None:
                 msg = timeout_msg()
-            raise TimeoutError(f'Timed out: {msg}. Screen contents: \n {repr(self.screen_contents())}')
+            raise TimeoutError(f'Timed out after {timeout} seconds: {msg}. {self.screen_contents_for_error()}')
 
     def wait_till_child_exits(self, timeout=30 if BaseTest.is_ci else 10, require_exit_code=None):
         end_time = time.monotonic() + timeout
@@ -413,11 +425,11 @@ class PTY:
                 if require_exit_code is not None and ec != require_exit_code:
                     raise AssertionError(
                         f'Child exited with exit status: {status} code: {ec} != {require_exit_code}.'
-                        f' Screen contents:\n{self.screen_contents()}')
+                        f' {self.screen_contents_for_error()}')
                 return status
             with suppress(OSError):
                 self.process_input_from_child(timeout=0.02)
-        raise AssertionError(f'Child did not exit in {timeout} seconds. Screen contents:\n{self.screen_contents()}')
+        raise AssertionError(f'Child did not exit in {timeout} seconds. {self.screen_contents_for_error()}')
 
     def set_window_size(self, rows=25, columns=80, send_signal=True):
         if hasattr(self, 'screen'):
@@ -427,6 +439,11 @@ class PTY:
             y_pixels = rows * self.cell_height
             s = struct.pack('HHHH', rows, columns, x_pixels, y_pixels)
             fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, s)
+
+    def screen_contents_for_error(self):
+        from kitty.window import as_text
+        ans = as_text(self.screen, add_history=True, as_ansi=False)
+        return f'Screen contents as repr:\n{ans!r}\nScreen contents:\n{ans.rstrip()}'
 
     def screen_contents(self):
         lines = []

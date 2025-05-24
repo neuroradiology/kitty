@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"time"
 
-	"kitty/tools/tui/loop"
-	"kitty/tools/utils"
-	"kitty/tools/wcswidth"
+	"github.com/kovidgoyal/kitty/tools/tui/loop"
+	"github.com/kovidgoyal/kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/wcswidth"
 )
 
 var _ = fmt.Print
@@ -177,7 +177,7 @@ func do_socket_io(io_data *rc_io_data) (serialized_response []byte, err error) {
 		network := utils.IfElse(global_options.to_network == "ip", "tcp", global_options.to_network)
 		conn, err = net.Dial(network, global_options.to_address)
 		if err != nil {
-			err = fmt.Errorf("Failed to connect to %s %s with error: %w", network, global_options.to_address, err)
+			err = fmt.Errorf("Failed to connect to %s:%s with error: %w", network, global_options.to_address, err)
 			return
 		}
 	}

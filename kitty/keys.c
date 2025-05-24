@@ -124,7 +124,7 @@ update_ime_focus(OSWindow *osw, bool focused) {
 
 void
 prepare_ime_position_update_event(OSWindow *osw, Window *w, Screen *screen, GLFWIMEUpdateEvent *ev) {
-    unsigned int cell_width = osw->fonts_data->cell_width, cell_height = osw->fonts_data->cell_height;
+    unsigned int cell_width = osw->fonts_data->fcm.cell_width, cell_height = osw->fonts_data->fcm.cell_height;
     unsigned int left = w->geometry.left, top = w->geometry.top;
     if (screen_is_overlay_active(screen)) {
         left += screen->overlay_line.cursor_x * cell_width;
@@ -235,7 +235,7 @@ on_key_input(const GLFWkeyevent *ev) {
     }
     if (!w) { debug("no active window, ignoring\n"); return; }
     send_pending_click_to_window(w, -1);
-    if (OPT(mouse_hide_wait) < 0 && !is_no_action_key(key, native_key)) hide_mouse(global_state.callback_os_window);
+    if (OPT(mouse_hide.hide_wait) < 0 && !is_no_action_key(key, native_key)) hide_mouse(global_state.callback_os_window);
     Screen *screen = w->render_data.screen;
     id_type active_window_id = w->id;
 
@@ -305,7 +305,7 @@ on_key_input(const GLFWkeyevent *ev) {
         }
         GLFWkeyevent *k = w->buffered_keys.key_data;
         k[w->buffered_keys.count++] = *ev;
-        debug("bufferring key until child is ready\n");
+        debug("buffering key until child is ready\n");
     } else send_key_to_child(w->id, screen, ev);
 #undef dispatch_key_event
 }

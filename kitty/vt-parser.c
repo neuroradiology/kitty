@@ -61,8 +61,8 @@ static void
 _report_params(PyObject *dump_callback, id_type window_id, const char *name, int *params, unsigned int count, bool is_group, Region *r) {
     static char buf[MAX_CSI_PARAMS*3] = {0};
     unsigned int i, p=0;
-    if (r) p += snprintf(buf + p, sizeof(buf) - 2, "%u %u %u %u ", r->top, r->left, r->bottom, r->right);
-    const char *fmt = is_group ? "%i:" : "%i ";
+    if (r) p += snprintf(buf + p, sizeof(buf) - 2, "%u;%u;%u;%u;", r->top, r->left, r->bottom, r->right);
+    const char *fmt = is_group ? "%i:" : "%i;";
     for(i = 0; i < count && p < arraysz(buf)-20; i++) {
         int n = snprintf(buf + p, arraysz(buf) - p, fmt, params[i]);
         if (n < 0) break;
@@ -377,6 +377,8 @@ find_st_terminator(PS *self, size_t *end_pos) {
 
 // OSC {{{
 
+#include "parse-multicell-command.h"
+
 static bool
 is_osc_52(PS *self) {
     return memcmp(self->buf + self->read.consumed, "52;", 3) == 0;
@@ -490,12 +492,19 @@ dispatch_osc(PS *self, uint8_t *buf, size_t limit, bool is_extended_osc) {
             START_DISPATCH
             DISPATCH_OSC(set_title);
             END_DISPATCH
+        case 5: case 105: REPORT_ERROR("Ignoring OSC 5/105, used by XTerm to change special colors used for rendering bold/italic/underline"); break;
+        case 6: case 106: {  // report only once as this is used by benchmark kitten causing log spam
+            static bool reported = false;
+            if (!reported) {
+                reported = true;
+                REPORT_ERROR("Ignoring OSC 6/106, used by XTerm to enable/disable special colors used for rendering bold/italic/underline");
+            }
+        } break;
         case 4:
         case 104:
             START_DISPATCH
             DISPATCH_OSC_WITH_CODE(set_color_table_color);
             END_DISPATCH
-        case 6:
         case 7:
 #ifdef DUMP_COMMANDS
             START_DISPATCH
@@ -514,6 +523,9 @@ dispatch_osc(PS *self, uint8_t *buf, size_t limit, bool is_extended_osc) {
             START_DISPATCH
             DISPATCH_OSC_WITH_CODE(desktop_notify)
             END_DISPATCH
+        case 13: case 14: case 15: case 16: case 18:
+            REPORT_ERROR("Ignoring OSC 13,14,15,16 and 18 used for pointer and Textronic colors by XTerm"); break;
+            break;
         case 10:
         case 11:
         case 12:
@@ -537,6 +549,13 @@ dispatch_osc(PS *self, uint8_t *buf, size_t limit, bool is_extended_osc) {
             if (is_extended_osc && code == 52) code = -52;
             DISPATCH_OSC_WITH_CODE(clipboard_control);
             END_DISPATCH
+        case 46: REPORT_ERROR("Ignoring OSC 46 used for file logging in XTerm"); break;
+        case 50: REPORT_ERROR("Ignoring OSC 50 used for font changing in XTerm"); break;
+        case 51: REPORT_ERROR("Ignoring OSC 51 used by emacs shell"); break;
+        case 60: case 61: REPORT_ERROR("Ignoring OSC 60/61 used for query control in XTerm"); break;
+        case 66:
+            parse_multicell_code(self, buf + i, limit - i);
+            break;
         case 133:
 #ifdef DUMP_COMMANDS
             START_DISPATCH
@@ -560,9 +579,20 @@ dispatch_osc(PS *self, uint8_t *buf, size_t limit, bool is_extended_osc) {
             REPORT_COMMAND(screen_pop_dynamic_colors);
             screen_pop_colors(self->screen, 0);
             break;
-        case 697:
-            REPORT_ERROR("Ignoring OSC 697, typically used by Fig for shell integration");
-            break;
+        case 440: REPORT_ERROR("Ignoring OSC 440 used for audio by mintty"); break;
+        case 633: REPORT_ERROR("Ignoring OSC 633, use by Windows Terminal for VSCode actions"); break;
+        case 666: REPORT_ERROR("Ignoring OSC 666, typically used by VTE terminals for shell integration"); break;
+        case 697: REPORT_ERROR("Ignoring OSC 697, typically used by Fig for shell integration"); break;
+        case 701: REPORT_ERROR("Ignoring OSC 701, used by mintty for locale"); break;
+        case 3008: REPORT_ERROR("Ignoring OSC 3008, used by systemd for OSC-context"); break;
+        case 7704: REPORT_ERROR("Ignoring OSC 7704, used by mintty for ANSI colors"); break;
+        case 7750: REPORT_ERROR("Ignoring OSC 7750, used by mintty for Emoji style"); break;
+        case 7770: REPORT_ERROR("Ignoring OSC 7770, used by mintty for font size"); break;
+        case 7721: REPORT_ERROR("Ignoring OSC 7721, used by mintty for copy window title"); break;
+        case 7771: REPORT_ERROR("Ignoring OSC 7771, used by mintty for glyph coverage"); break;
+        case 7777: REPORT_ERROR("Ignoring OSC 7777, used by mintty for window size"); break;
+        case 77119: REPORT_ERROR("Ignoring OSC 7777, used by mintty for wide chars"); break;
+        case 9001: REPORT_ERROR("Ignoring OSC 9001, used by windows terminal"); break;
         default:
             REPORT_UKNOWN_ESCAPE_CODE("OSC", buf);
             break;
@@ -613,6 +643,7 @@ parse_kitty_dcs(PS *self, uint8_t *buf, size_t bufsz) {
     dispatch("ask|", handle_remote_askpass, 0)
     dispatch("clone|", handle_remote_clone, 0)
     dispatch("edit|", handle_remote_edit, 0)
+    dispatch("restore-cursor-appearance|", handle_restore_cursor_appearance, 0)
 
     return false;
 #undef dispatch
@@ -1299,11 +1330,7 @@ dispatch_csi(PS *self) {
                 break;
             }
             if (start_modifier == '>' && !end_modifier) {
-                REPORT_ERROR(
-                    "The application is trying to use xterm's modifyOtherKeys."
-                    " This is superseded by the kitty keyboard protocol: https://sw.kovidgoyal.net/kitty/keyboard-protocol/"
-                    " the application should be updated to use that"
-                );
+                CALL_CSI_HANDLER1(screen_modify_other_keys, 0);
                 break;
             }
             /* fallthrough */
@@ -1421,6 +1448,7 @@ static void
 run_worker(void *p, ParseData *pd, bool flush) {
     Screen *screen = (Screen*)p;
     PS *self = (PS*)screen->vt_parser->state;
+    screen->parsing_at = pd->now;
     with_lock {
         self->read.sz += self->write.pending; self->write.pending = 0;
         pd->has_pending_input = self->read.pos < self->read.sz;

@@ -8,10 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
-	"kitty/tools/tui/loop"
-	"kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/tui/loop"
+	"github.com/kovidgoyal/kitty/tools/utils"
 )
 
 var _ = fmt.Print
@@ -37,12 +38,7 @@ func (self *Input) has_mime_matching(predicate func(string) bool) bool {
 	if predicate(self.mime_type) {
 		return true
 	}
-	for _, i := range self.extra_mime_types {
-		if predicate(i) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(self.extra_mime_types, predicate)
 }
 
 func write_loop(inputs []*Input, opts *Options) (err error) {
@@ -99,7 +95,7 @@ func write_loop(inputs []*Input, opts *Options) (err error) {
 		i := inputs[0]
 		n, err := i.src.Read(buf[:])
 		if n > 0 {
-			waiting_for_write = lp.QueueWriteString(encode_bytes(make_metadata("wdata", i.mime_type), buf[:n]))
+			waiting_for_write = lp.QueueWriteString(Encode_bytes(make_metadata("wdata", i.mime_type), buf[:n]))
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {

@@ -66,6 +66,10 @@ typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR
 #include "wayland-wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "wayland-single-pixel-buffer-v1-client-protocol.h"
 #include "wayland-idle-inhibit-unstable-v1-client-protocol.h"
+#include "wayland-keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h"
+#include "wayland-xdg-toplevel-icon-v1-client-protocol.h"
+#include "wayland-xdg-system-bell-v1-client-protocol.h"
+#include "wayland-xdg-toplevel-tag-v1-client-protocol.h"
 
 #define _glfw_dlopen(name) dlopen(name, RTLD_LAZY | RTLD_LOCAL)
 #define _glfw_dlclose(handle) dlclose(handle)
@@ -129,6 +133,10 @@ typedef enum WaylandWindowState {
     TOPLEVEL_STATE_TILED_TOP = 64,
     TOPLEVEL_STATE_TILED_BOTTOM = 128,
     TOPLEVEL_STATE_SUSPENDED = 256,
+    TOPLEVEL_STATE_CONSTRAINED_LEFT = 512,
+    TOPLEVEL_STATE_CONSTRAINED_RIGHT = 1024,
+    TOPLEVEL_STATE_CONSTRAINED_TOP = 2048,
+    TOPLEVEL_STATE_CONSTRAINED_BOTTOM = 4096,
 } WaylandWindowState;
 
 typedef struct glfw_wl_xdg_activation_request {
@@ -159,7 +167,7 @@ enum _GLFWWaylandAxisEvent {
 typedef struct _GLFWwindowWayland
 {
     int                         width, height;
-    bool                        visible;
+    bool                        visible, created;
     bool                        hovered;
     bool                        transparent;
     struct wl_surface*          surface;
@@ -178,7 +186,7 @@ typedef struct _GLFWwindowWayland
     struct org_kde_kwin_blur *org_kde_kwin_blur;
     bool has_blur, expect_scale_from_compositor, window_fully_created;
     struct {
-        bool surface_configured, fractional_scale_received, preferred_scale_received;
+        bool surface_configured, preferred_scale_received, fractional_scale_received;
     } once;
     struct wl_buffer *temp_buffer_used_during_window_creation;
     struct {
@@ -204,7 +212,7 @@ typedef struct _GLFWwindowWayland
     double                      cursorPosX, cursorPosY, allCursorPosX, allCursorPosY;
 
     char*                       title;
-    char                        appId[256];
+    char                        appId[256], windowTag[256];
 
     // We need to track the monitors the window spans on to calculate the
     // optimal scaling factor.
@@ -283,6 +291,7 @@ typedef struct _GLFWwindowWayland
         WaylandWindowState toplevel_states;
         uint32_t decoration_mode;
     } current, pending;
+    struct zwp_keyboard_shortcuts_inhibitor_v1 *keyboard_shortcuts_inhibitor;
 } _GLFWwindowWayland;
 
 typedef enum _GLFWWaylandOfferType
@@ -332,6 +341,9 @@ typedef struct _GLFWlibraryWayland
     struct zwp_primary_selection_device_v1*    primarySelectionDevice;
     struct zwp_primary_selection_source_v1*    dataSourceForPrimarySelection;
     struct xdg_activation_v1* xdg_activation_v1;
+    struct xdg_toplevel_icon_manager_v1* xdg_toplevel_icon_manager_v1;
+    struct xdg_system_bell_v1* xdg_system_bell_v1;
+    struct xdg_toplevel_tag_manager_v1* xdg_toplevel_tag_manager_v1;
     struct wp_cursor_shape_manager_v1* wp_cursor_shape_manager_v1;
     struct wp_cursor_shape_device_v1* wp_cursor_shape_device_v1;
     struct wp_fractional_scale_manager_v1 *wp_fractional_scale_manager_v1;
@@ -340,6 +352,7 @@ typedef struct _GLFWlibraryWayland
     struct zwlr_layer_shell_v1* zwlr_layer_shell_v1; uint32_t zwlr_layer_shell_v1_version;
     struct wp_single_pixel_buffer_manager_v1 *wp_single_pixel_buffer_manager_v1;
     struct zwp_idle_inhibit_manager_v1* idle_inhibit_manager;
+    struct zwp_keyboard_shortcuts_inhibit_manager_v1 *keyboard_shortcuts_inhibit_manager;
 
     int                         compositorVersion;
     int                         seatVersion;
@@ -389,6 +402,7 @@ typedef struct _GLFWlibraryWayland
     size_t dataOffersCounter;
     _GLFWWaylandDataOffer dataOffers[8];
     bool has_preferred_buffer_scale;
+    char *compositor_name;
 } _GLFWlibraryWayland;
 
 // Wayland-specific per-monitor data
@@ -397,7 +411,6 @@ typedef struct _GLFWmonitorWayland
 {
     struct wl_output*           output;
     uint32_t                    name;
-    char                        friendly_name[64], description[64];
     int                         currentMode;
 
     int                         x;
@@ -432,6 +445,7 @@ int _glfwWaylandIntegerWindowScale(_GLFWwindow*);
 void animateCursorImage(id_type timer_id, void *data);
 struct wl_cursor* _glfwLoadCursor(GLFWCursorShape, struct wl_cursor_theme*);
 void destroy_data_offer(_GLFWWaylandDataOffer*);
+const char* _glfwWaylandCompositorName(void);
 
 typedef struct wayland_cursor_shape {
     int which; const char *name;

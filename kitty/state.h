@@ -20,9 +20,9 @@
 #define debug_input(...) if (OPT(debug_keyboard)) { timed_debug_print(__VA_ARGS__); }
 #define debug_fonts(...) if (global_state.debug_font_fallback) { timed_debug_print(__VA_ARGS__); }
 
-typedef enum { LEFT_EDGE, TOP_EDGE, RIGHT_EDGE, BOTTOM_EDGE } Edge;
+typedef enum { LEFT_EDGE = 1, TOP_EDGE = 2, RIGHT_EDGE = 4, BOTTOM_EDGE = 8 } Edge;
 typedef enum { REPEAT_MIRROR, REPEAT_CLAMP, REPEAT_DEFAULT } RepeatStrategy;
-typedef enum { WINDOW_NORMAL, WINDOW_FULLSCREEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED } WindowState;
+typedef enum { WINDOW_NORMAL, WINDOW_FULLSCREEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED, WINDOW_HIDDEN } WindowState;
 
 typedef struct {
     char_type string[16];
@@ -39,7 +39,12 @@ struct MenuItem {
 };
 
 typedef struct {
-    monotonic_t visual_bell_duration, cursor_blink_interval, cursor_stop_blinking_after, mouse_hide_wait, click_interval;
+    monotonic_t visual_bell_duration, cursor_blink_interval, cursor_stop_blinking_after, click_interval;
+    struct {
+        monotonic_t hide_wait, unhide_wait;
+        int unhide_threshold;
+        bool scroll_unhide;
+    } mouse_hide;
     double wheel_scroll_multiplier, touch_scroll_multiplier;
     int wheel_scroll_min_lines;
     bool enable_audio_bell;
@@ -90,7 +95,7 @@ typedef struct {
     struct { monotonic_t on_end, on_pause; } resize_debounce_time;
     MouseShape pointer_shape_when_grabbed;
     MouseShape default_pointer_shape;
-    MouseShape pointer_shape_when_dragging;
+    MouseShape pointer_shape_when_dragging, pointer_shape_when_dragging_rectangle;
     struct {
         UrlPrefix *values;
         size_t num, max_prefix_len;
@@ -123,6 +128,9 @@ typedef struct {
         } *entries;
     } font_features;
     struct { Animation *cursor, *visual_bell; } animation;
+    unsigned undercurl_style;
+    struct { float thickness; int unit; } underline_exclusion;
+    float box_drawing_scale[4];
 } Options;
 
 typedef struct WindowLogoRenderData {
@@ -277,13 +285,15 @@ typedef struct {
     BackgroundImage *bgimage;
     unsigned int active_tab, num_tabs, capacity, last_active_tab, last_num_tabs, last_active_window_id;
     bool focused_at_last_render, needs_render;
+    unsigned keep_rendering_till_swap;
     WindowRenderData tab_bar_render_data;
     struct {
         color_type left, right;
     } tab_bar_edge_color;
     bool tab_bar_data_updated;
     bool is_focused;
-    monotonic_t cursor_blink_zero_time, last_mouse_activity_at;
+    monotonic_t cursor_blink_zero_time, last_mouse_activity_at, mouse_activate_deadline;
+    int mouse_show_threshold;
     bool has_received_cursor_pos_event;
     double mouse_x, mouse_y;
     bool mouse_button_pressed[32];
@@ -303,6 +313,7 @@ typedef struct {
     uint64_t render_calls;
     id_type last_focused_counter;
     CloseRequest close_request;
+    bool is_layer_shell, hide_on_focus_loss;
 } OSWindow;
 
 
@@ -315,7 +326,7 @@ typedef struct {
     OSWindow *os_windows;
     size_t num_os_windows, capacity;
     OSWindow *callback_os_window;
-    bool is_wayland;
+    bool is_wayland, is_apple;
     bool has_render_frames;
     bool debug_rendering, debug_font_fallback;
     bool has_pending_resizes, has_pending_closes;
@@ -337,6 +348,13 @@ extern GlobalState global_state;
     if (cret_ == NULL) { PyErr_Print(); } \
     else Py_DECREF(cret_); \
 }
+
+static inline void
+sprite_index_to_pos(unsigned idx, unsigned xnum, unsigned ynum, unsigned *x, unsigned *y, unsigned *z) {
+    div_t r = div(idx & 0x7fffffff, ynum * xnum), r2 = div(r.rem, xnum);
+    *z = r.quot; *y = r2.quot; *x = r2.rem;
+}
+
 
 void gl_init(void);
 void remove_vao(ssize_t vao_idx);
@@ -379,7 +397,7 @@ void update_surface_size(int, int, uint32_t);
 void free_texture(uint32_t*);
 void free_framebuffer(uint32_t*);
 void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool, bool, RepeatStrategy);
-void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, unsigned int, unsigned int, unsigned int, pixel*);
+void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, sprite_index, pixel*, sprite_index);
 void blank_canvas(float, color_type);
 void blank_os_window(OSWindow *);
 void set_os_window_chrome(OSWindow *w);
@@ -397,7 +415,7 @@ void remove_main_loop_timer(id_type timer_id);
 void update_main_loop_timer(id_type timer_id, monotonic_t interval, bool enabled);
 void run_main_loop(tick_callback_fun, void*);
 void stop_main_loop(void);
-void os_window_update_size_increments(OSWindow *window);
+void on_os_window_font_size_change(OSWindow *window, double new_sz);
 void set_os_window_title_from_window(Window *w, OSWindow *os_window);
 void update_os_window_title(OSWindow *os_window);
 void fake_scroll(Window *w, int amount, bool upwards);
@@ -420,7 +438,7 @@ bool update_ime_position_for_window(id_type window_id, bool force, int update_fo
 void set_ignore_os_keyboard_processing(bool enabled);
 void update_menu_bar_title(PyObject *title UNUSED);
 void change_live_resize_state(OSWindow*, bool);
-bool render_os_window(OSWindow *w, monotonic_t now, bool ignore_render_frames, bool scan_for_animated_images);
+bool render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images);
 void update_mouse_pointer_shape(void);
 void adjust_window_size_for_csd(OSWindow *w, int width, int height, int *adjusted_width, int *adjusted_height);
 void dispatch_buffered_keys(Window *w);

@@ -418,8 +418,8 @@ detach_window(id_type os_window_id, id_type tab_id, id_type id) {
 static void
 resize_screen(OSWindow *os_window, Screen *screen, bool has_graphics) {
     if (screen) {
-        screen->cell_size.width = os_window->fonts_data->cell_width;
-        screen->cell_size.height = os_window->fonts_data->cell_height;
+        screen->cell_size.width = os_window->fonts_data->fcm.cell_width;
+        screen->cell_size.height = os_window->fonts_data->fcm.cell_height;
         screen_dirty_sprite_positions(screen);
         if (has_graphics) screen_rescale_images(screen);
     }
@@ -438,8 +438,8 @@ attach_window(id_type os_window_id, id_type tab_id, id_type id) {
                 make_os_window_context_current(osw);
                 create_gpu_resources_for_window(w);
                 if (
-                    w->render_data.screen->cell_size.width != osw->fonts_data->cell_width ||
-                    w->render_data.screen->cell_size.height != osw->fonts_data->cell_height
+                    w->render_data.screen->cell_size.width != osw->fonts_data->fcm.cell_width ||
+                    w->render_data.screen->cell_size.height != osw->fonts_data->fcm.cell_height
                 ) resize_screen(osw, w->render_data.screen, true);
                 else screen_dirty_sprite_positions(w->render_data.screen);
                 w->render_data.screen->reload_all_gpu_data = true;
@@ -587,20 +587,20 @@ os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
         switch(OPT(tab_bar_edge)) {
             case TOP_EDGE:
                 central->left = 0;  central->right = os_window->viewport_width - 1;
-                central->top = os_window->fonts_data->cell_height + margin_inner + margin_outer;
+                central->top = os_window->fonts_data->fcm.cell_height + margin_inner + margin_outer;
                 central->bottom = os_window->viewport_height - 1;
                 central->top = MIN(central->top, central->bottom);
                 tab_bar->top = margin_outer;
                 break;
             default:
                 central->left = 0; central->top = 0; central->right = os_window->viewport_width - 1;
-                long bottom = os_window->viewport_height - os_window->fonts_data->cell_height - 1 - margin_inner - margin_outer;
+                long bottom = os_window->viewport_height - os_window->fonts_data->fcm.cell_height - 1 - margin_inner - margin_outer;
                 central->bottom = MAX(0, bottom);
                 tab_bar->top = central->bottom + 1 + margin_inner;
                 break;
         }
         tab_bar->left = central->left; tab_bar->right = central->right;
-        tab_bar->bottom = tab_bar->top + os_window->fonts_data->cell_height - 1;
+        tab_bar->bottom = tab_bar->top + os_window->fonts_data->fcm.cell_height - 1;
     } else {
         zero_at_ptr(tab_bar);
         central->left = 0; central->top = 0; central->right = os_window->viewport_width - 1;
@@ -769,10 +769,11 @@ PYWRAP1(set_options) {
         Py_CLEAR(global_state.options_object);
         Py_RETURN_NONE;
     }
-    global_state.is_wayland = is_wayland ? true : false;
 #ifdef __APPLE__
+    global_state.is_apple = true;
     global_state.has_render_frames = true;
 #endif
+    global_state.is_wayland = is_wayland ? true : false;
     if (global_state.is_wayland) global_state.has_render_frames = true;
     global_state.debug_rendering = debug_rendering ? true : false;
     global_state.debug_font_fallback = debug_font_fallback ? true : false;
@@ -789,8 +790,8 @@ PYWRAP1(set_ignore_os_keyboard_processing) {
 
 static void
 init_window_render_data(OSWindow *osw, const WindowGeometry *g, WindowRenderData *d) {
-    d->dx = gl_size(osw->fonts_data->cell_width, osw->viewport_width);
-    d->dy = gl_size(osw->fonts_data->cell_height, osw->viewport_height);
+    d->dx = gl_size(osw->fonts_data->fcm.cell_width, osw->viewport_width);
+    d->dy = gl_size(osw->fonts_data->fcm.cell_height, osw->viewport_height);
     d->xstart = gl_pos_x(g->left, osw->viewport_width);
     d->ystart = gl_pos_y(g->top, osw->viewport_height);
 }
@@ -839,7 +840,7 @@ PYWRAP1(viewport_for_window) {
     WITH_OS_WINDOW(os_window_id)
         os_window_regions(os_window, &central, &tab_bar);
         vw = os_window->viewport_width; vh = os_window->viewport_height;
-        cell_width = os_window->fonts_data->cell_width; cell_height = os_window->fonts_data->cell_height;
+        cell_width = os_window->fonts_data->fcm.cell_width; cell_height = os_window->fonts_data->fcm.cell_height;
         goto end;
     END_WITH_OS_WINDOW
 end:
@@ -851,7 +852,7 @@ PYWRAP1(cell_size_for_window) {
     unsigned int cell_width = 0, cell_height = 0;
     PA("K", &os_window_id);
     WITH_OS_WINDOW(os_window_id)
-        cell_width = os_window->fonts_data->cell_width; cell_height = os_window->fonts_data->cell_height;
+        cell_width = os_window->fonts_data->fcm.cell_width; cell_height = os_window->fonts_data->fcm.cell_height;
         goto end;
     END_WITH_OS_WINDOW
 end:
@@ -939,6 +940,7 @@ PYWRAP1(set_os_window_chrome) {
 
 PYWRAP1(mark_tab_bar_dirty) {
     id_type os_window_id = PyLong_AsUnsignedLongLong(args);
+    if (PyErr_Occurred()) return NULL;
     WITH_OS_WINDOW(os_window_id)
         os_window->tab_bar_data_updated = false;
     END_WITH_OS_WINDOW
@@ -959,6 +961,7 @@ PYWRAP1(change_background_opacity) {
 
 PYWRAP1(background_opacity_of) {
     id_type os_window_id = PyLong_AsUnsignedLongLong(args);
+    if (PyErr_Occurred()) return NULL;
     WITH_OS_WINDOW(os_window_id)
         return PyFloat_FromDouble((double)os_window->background_opacity);
     END_WITH_OS_WINDOW
@@ -1048,7 +1051,15 @@ PYWRAP1(get_os_window_title) {
     Py_RETURN_NONE;
 }
 
-
+PYWRAP1(os_window_is_invisible) {
+    id_type os_window_id = PyLong_AsUnsignedLongLong(args);
+    if (PyErr_Occurred()) return NULL;
+    WITH_OS_WINDOW(os_window_id)
+        if (should_os_window_be_rendered(os_window)) { Py_RETURN_FALSE; }
+        Py_RETURN_TRUE;
+    END_WITH_OS_WINDOW
+    Py_RETURN_FALSE;
+}
 
 PYWRAP1(pt_to_px) {
     double pt;
@@ -1071,9 +1082,7 @@ PYWRAP1(os_window_font_size) {
     PA("K|dp", &os_window_id, &new_sz, &force);
     WITH_OS_WINDOW(os_window_id)
         if (new_sz > 0 && (force || new_sz != os_window->fonts_data->font_sz_in_pts)) {
-            double xdpi, ydpi; float xscale, yscale;
-            get_os_window_content_scale(os_window, &xdpi, &ydpi, &xscale, &yscale);
-            os_window->fonts_data = load_fonts_data(new_sz, xdpi, ydpi);
+            on_os_window_font_size_change(os_window, new_sz);
             send_prerendered_sprites_for_window(os_window);
             resize_screen(os_window, os_window->tab_bar_render_data.screen, false);
             for (size_t ti = 0; ti < os_window->num_tabs; ti++) {
@@ -1083,7 +1092,6 @@ PYWRAP1(os_window_font_size) {
                     resize_screen(os_window, w->render_data.screen, true);
                 }
             }
-            os_window_update_size_increments(os_window);
             // On Wayland with CSD title needs to be re-rendered in a different font size
             if (os_window->window_title && global_state.is_wayland) set_os_window_title(os_window, NULL);
         }
@@ -1112,11 +1120,11 @@ PYWRAP1(get_os_window_size) {
         int width, height, fw, fh;
         get_os_window_size(os_window, &width, &height, &fw, &fh);
         get_os_window_content_scale(os_window, &xdpi, &ydpi, &xscale, &yscale);
-        unsigned int cell_width = os_window->fonts_data->cell_width, cell_height = os_window->fonts_data->cell_height;
-        return Py_BuildValue("{si si si si sf sf sd sd sI sI}",
+        unsigned int cell_width = os_window->fonts_data->fcm.cell_width, cell_height = os_window->fonts_data->fcm.cell_height;
+        return Py_BuildValue("{si si si si sf sf sd sd sI sI sO}",
             "width", width, "height", height, "framebuffer_width", fw, "framebuffer_height", fh,
             "xscale", xscale, "yscale", yscale, "xdpi", xdpi, "ydpi", ydpi,
-            "cell_width", cell_width, "cell_height", cell_height);
+            "cell_width", cell_width, "cell_height", cell_height, "is_layer_shell", os_window->is_layer_shell ? Py_True : Py_False);
     END_WITH_OS_WINDOW
     Py_RETURN_NONE;
 }
@@ -1207,13 +1215,14 @@ PYWRAP1(update_tab_bar_edge_colors) {
 }
 
 static PyObject*
-pyset_background_image(PyObject *self UNUSED, PyObject *args) {
+pyset_background_image(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     const char *path;
-    PyObject *layout_name = NULL;
+    PyObject *layout_name = NULL, *pylinear = NULL, *pytint = NULL, *pytint_gaps = NULL;
     PyObject *os_window_ids;
     int configured = 0;
     char *png_data = NULL; Py_ssize_t png_data_size = 0;
-    PA("zO!|pOy#", &path, &PyTuple_Type, &os_window_ids, &configured, &layout_name, &png_data, &png_data_size);
+    static char *kwds[] = {"path", "os_window_ids", "configured", "layout_name", "png_data", "linear", "tint", "tint_gaps", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "zO!|pOy#OOO", kwds, &path, &PyTuple_Type, &os_window_ids, &configured, &layout_name, &png_data, &png_data_size, &pylinear, &pytint, &pytint_gaps)) return NULL;
     size_t size;
     BackgroundImageLayout layout = PyUnicode_Check(layout_name) ? bglayout(layout_name) : OPT(background_image_layout);
     BackgroundImage *bgimage = NULL;
@@ -1239,6 +1248,9 @@ pyset_background_image(PyObject *self UNUSED, PyObject *args) {
         global_state.bgimage = bgimage;
         if (bgimage) bgimage->refcnt++;
         OPT(background_image_layout) = layout;
+        if (pylinear && pylinear != Py_None) convert_from_python_background_image_linear(pylinear, &global_state.opts);
+        if (pytint && pytint != Py_None) convert_from_python_background_tint(pytint, &global_state.opts);
+        if (pytint_gaps && pytint_gaps != Py_None) convert_from_python_background_tint_gaps(pytint_gaps, &global_state.opts);
     }
     for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(os_window_ids); i++) {
         id_type os_window_id = PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(os_window_ids, i));
@@ -1486,10 +1498,11 @@ static PyMethodDef module_methods[] = {
     MW(get_os_window_pos, METH_VARARGS),
     MW(set_os_window_pos, METH_VARARGS),
     MW(global_font_size, METH_VARARGS),
-    MW(set_background_image, METH_VARARGS),
+    {"set_background_image", (PyCFunction)(void (*) (void))pyset_background_image, METH_VARARGS | METH_KEYWORDS, ""},
     MW(os_window_font_size, METH_VARARGS),
     MW(set_os_window_size, METH_VARARGS),
     MW(get_os_window_size, METH_VARARGS),
+    MW(os_window_is_invisible, METH_O),
     MW(update_tab_bar_edge_colors, METH_VARARGS),
     MW(set_boss, METH_O),
     MW(get_boss, METH_NOARGS),
@@ -1547,7 +1560,10 @@ init_state(PyObject *module) {
     PyModule_AddIntMacro(module, WINDOW_NORMAL);
     PyModule_AddIntMacro(module, WINDOW_FULLSCREEN);
     PyModule_AddIntMacro(module, WINDOW_MAXIMIZED);
+    PyModule_AddIntMacro(module, WINDOW_HIDDEN);
     PyModule_AddIntMacro(module, WINDOW_MINIMIZED);
+    PyModule_AddIntMacro(module, TOP_EDGE);
+    PyModule_AddIntMacro(module, BOTTOM_EDGE);
     register_at_exit_cleanup_func(STATE_CLEANUP_FUNC, finalize);
     return true;
 }

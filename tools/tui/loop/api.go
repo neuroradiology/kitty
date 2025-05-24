@@ -13,10 +13,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"kitty/tools/tty"
-	"kitty/tools/utils"
-	"kitty/tools/utils/style"
-	"kitty/tools/wcswidth"
+	"github.com/kovidgoyal/kitty/tools/tty"
+	"github.com/kovidgoyal/kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/utils/style"
+	"github.com/kovidgoyal/kitty/tools/wcswidth"
 )
 
 type ScreenSize struct {
@@ -57,6 +57,10 @@ type Loop struct {
 	style_ctx                              style.Context
 	atomic_update_active                   bool
 	pointer_shapes                         []PointerShape
+	waiting_for_capabilities_response      bool
+
+	// Queried capabilities from terminal
+	TerminalCapabilities TerminalCapabilities
 
 	// Suspend the loop restoring terminal state, and run the provided function. When it returns terminal state is
 	// put back to what it was before suspending unless the function returns an error or an error occurs saving/restoring state.
@@ -111,6 +115,15 @@ type Loop struct {
 
 	// Called on SIGTERM return true if you wish to handle it yourself
 	OnSIGTERM func() (bool, error)
+
+	// Called when capabilities response is received
+	OnCapabilitiesReceived func(TerminalCapabilities) error
+
+	// Called when the terminal's color scheme changes
+	OnColorSchemeChange func(ColorPreference) error
+
+	// Called on focus in/out events
+	OnFocusChange func(bool) error
 }
 
 func New(options ...func(self *Loop)) (*Loop, error) {
@@ -196,6 +209,15 @@ func NoRestoreColors(self *Loop) {
 	self.terminal_options.restore_colors = false
 }
 
+func (self *Loop) ColorSchemeChangeNotifications() *Loop {
+	self.terminal_options.color_scheme_change_notification = true
+	return self
+}
+
+func ColorSchemeChangeNotifications(self *Loop) {
+	self.terminal_options.color_scheme_change_notification = true
+}
+
 func NoInBandResizeNotifications(self *Loop) {
 	self.terminal_options.in_band_resize_notification = false
 }
@@ -278,10 +300,7 @@ func (self *Loop) DebugPrintln(args ...any) {
 		const limit = 2048
 		msg := fmt.Sprintln(args...)
 		for i := 0; i < len(msg); i += limit {
-			end := i + limit
-			if end > len(msg) {
-				end = len(msg)
-			}
+			end := min(i+limit, len(msg))
 			self.QueueWriteString("\x1bP@kitty-print|")
 			self.QueueWriteString(base64.StdEncoding.EncodeToString([]byte(msg[i:end])))
 			self.QueueWriteString("\x1b\\")
@@ -292,11 +311,12 @@ func (self *Loop) DebugPrintln(args ...any) {
 func (self *Loop) Run() (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			pcs := make([]uintptr, 256)
+			pcs := make([]uintptr, 512)
 			n := runtime.Callers(2, pcs)
+			lines := []string{}
 			frames := runtime.CallersFrames(pcs[:n])
 			err = fmt.Errorf("Panicked: %s", r)
-			fmt.Fprintf(os.Stderr, "\r\nPanicked with error: %s\r\nStacktrace (most recent call first):\r\n", r)
+			lines = append(lines, fmt.Sprintf("\r\nPanicked with error: %s\r\nStacktrace (most recent call first):\r\n", r))
 			found_first_frame := false
 			for frame, more := frames.Next(); more; frame, more = frames.Next() {
 				if !found_first_frame {
@@ -305,8 +325,11 @@ func (self *Loop) Run() (err error) {
 					}
 					found_first_frame = true
 				}
-				fmt.Fprintf(os.Stderr, "%s\r\n\t%s:%d\r\n", frame.Function, frame.File, frame.Line)
+				lines = append(lines, fmt.Sprintf("%s\r\n\t%s:%d\r\n", frame.Function, frame.File, frame.Line))
 			}
+			text := strings.Join(lines, "")
+			os.Stderr.WriteString(text)
+			tty.DebugPrintln(strings.TrimSpace(text))
 			if self.terminal_options.Alternate_screen {
 				term, err := tty.OpenControllingTerm(tty.SetRaw)
 				if err == nil {
@@ -537,4 +560,65 @@ func (self *Loop) CurrentPointerShape() (ans PointerShape, has_shape bool) {
 		ans = self.pointer_shapes[len(self.pointer_shapes)-1]
 	}
 	return
+}
+
+// Query the terminal for various capabilities, the OnCapabilitiesReceived
+// callback will be called once the query response is received. This
+// function should be called as early as possible ideally in OnInitialize.
+func (self *Loop) QueryCapabilities() {
+	if !self.waiting_for_capabilities_response {
+		self.waiting_for_capabilities_response = true
+		self.StartAtomicUpdate()
+		self.QueueWriteString("\x1b[?u\x1b[?996n\x1b[c")
+		self.EndAtomicUpdate()
+	}
+}
+
+type Alignment int
+
+const (
+	ALIGN_START Alignment = iota
+	ALIGN_CENTER
+	ALIGN_END
+)
+
+type SizedText struct {
+	Scale, Subscale_numerator, Subscale_denominator int
+	Horizontal_alignment, Vertical_alignment        Alignment
+	Width                                           int
+}
+
+func (self *Loop) DrawSizedText(text string, spec SizedText) {
+	b := strings.Builder{}
+	b.Grow(len(text) + 24)
+	b.WriteString("\x1b]66;")
+	sep := ""
+	if spec.Scale > 1 {
+		b.WriteString(fmt.Sprintf("%ss=%d", sep, min(spec.Scale, 7)))
+		sep = ":"
+	}
+	if spec.Width > 0 {
+		b.WriteString(fmt.Sprintf("%sw=%d", sep, min(spec.Width, 7)))
+		sep = ":"
+	}
+	if spec.Subscale_numerator > 0 {
+		b.WriteString(fmt.Sprintf("%sn=%d", sep, min(spec.Subscale_numerator, 15)))
+		sep = ":"
+	}
+	if spec.Subscale_denominator > spec.Subscale_numerator {
+		b.WriteString(fmt.Sprintf("%sd=%d", sep, min(spec.Subscale_denominator, 15)))
+		sep = ":"
+	}
+	if spec.Horizontal_alignment > ALIGN_START {
+		b.WriteString(fmt.Sprintf("%sh=%d", sep, spec.Horizontal_alignment))
+		sep = ":"
+	}
+	if spec.Vertical_alignment > ALIGN_START {
+		b.WriteString(fmt.Sprintf("%sv=%d", sep, spec.Vertical_alignment))
+		sep = ":"
+	}
+	b.WriteString(";")
+	b.WriteString(text)
+	b.WriteString("\a")
+	self.QueueWriteString(b.String())
 }

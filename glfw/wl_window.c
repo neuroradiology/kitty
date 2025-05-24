@@ -43,10 +43,20 @@
 
 #define debug debug_rendering
 
-static GLFWLayerShellConfig layer_shell_config_for_next_window = {0};
-
 static bool
 is_layer_shell(_GLFWwindow *window) { return window->wl.layer_shell.config.type != GLFW_LAYER_SHELL_NONE; }
+
+static void
+inhibit_shortcuts_for(_GLFWwindow *window, bool inhibit) {
+    if (inhibit) {
+        if (window->wl.keyboard_shortcuts_inhibitor) return;
+        window->wl.keyboard_shortcuts_inhibitor = zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(_glfw.wl.keyboard_shortcuts_inhibit_manager, window->wl.surface, _glfw.wl.seat);
+    } else {
+        if (!window->wl.keyboard_shortcuts_inhibitor) return;
+        zwp_keyboard_shortcuts_inhibitor_v1_destroy(window->wl.keyboard_shortcuts_inhibitor);
+        window->wl.keyboard_shortcuts_inhibitor = NULL;
+    }
+}
 
 static void
 activation_token_done(void *data, struct xdg_activation_token_v1 *xdg_token, const char *token) {
@@ -101,6 +111,19 @@ get_activation_token(
 #undef fail
 }
 
+static void
+convert_glfw_image_to_wayland_image(const GLFWimage* image, unsigned char *target) {
+    // convert RGBA non-premultiplied to ARGB pre-multiplied
+    unsigned char* source = (unsigned char*) image->pixels;
+    for (int i = 0;  i < image->width * image->height;  i++, source += 4) {
+        unsigned int alpha = source[3];
+        *target++ = (unsigned char) ((source[2] * alpha) / 255);
+        *target++ = (unsigned char) ((source[1] * alpha) / 255);
+        *target++ = (unsigned char) ((source[0] * alpha) / 255);
+        *target++ = (unsigned char) alpha;
+    }
+}
+
 static struct wl_buffer* createShmBuffer(const GLFWimage* image, bool is_opaque, bool init_data)
 {
     struct wl_shm_pool* pool;
@@ -108,7 +131,7 @@ static struct wl_buffer* createShmBuffer(const GLFWimage* image, bool is_opaque,
     int stride = image->width * 4;
     int length = image->width * image->height * 4;
     void* data;
-    int fd, i;
+    int fd;
 
     fd = createAnonymousFile(length);
     if (fd < 0)
@@ -131,19 +154,7 @@ static struct wl_buffer* createShmBuffer(const GLFWimage* image, bool is_opaque,
     pool = wl_shm_create_pool(_glfw.wl.shm, fd, length);
 
     close(fd);
-    if (init_data) {
-        unsigned char* source = (unsigned char*) image->pixels;
-        unsigned char* target = data;
-        for (i = 0;  i < image->width * image->height;  i++, source += 4)
-        {
-            unsigned int alpha = source[3];
-
-            *target++ = (unsigned char) ((source[2] * alpha) / 255);
-            *target++ = (unsigned char) ((source[1] * alpha) / 255);
-            *target++ = (unsigned char) ((source[0] * alpha) / 255);
-            *target++ = (unsigned char) alpha;
-        }
-    }
+    if (init_data) convert_glfw_image_to_wayland_image(image, data);
 
     buffer =
         wl_shm_pool_create_buffer(pool, 0,
@@ -520,7 +531,7 @@ surface_preferred_buffer_scale(void *data, struct wl_surface *surface UNUSED, in
     if ((int)window->wl.integer_scale.preferred == scale && window->wl.window_fully_created) return;
     debug("Preferred integer buffer scale changed to: %d for window %llu\n", scale, window->id);
     window->wl.integer_scale.preferred = scale;
-    window->wl.window_fully_created = true;
+    window->wl.window_fully_created = window->wl.once.surface_configured;
     if (!window->wl.fractional_scale) apply_scale_changes(window, true, true);
 }
 
@@ -547,11 +558,12 @@ fractional_scale_preferred_scale(void *data, struct wp_fractional_scale_v1 *wp_f
     if (scale == window->wl.fractional_scale && window->wl.window_fully_created) return;
     debug("Fractional scale requested: %u/120 = %.2f for window %llu\n", scale, scale / 120., window->id);
     window->wl.fractional_scale = scale;
-    // Hyprland sends a fraction scale = 1 event before configuring the xdg surface and then another after with the correct scale
-    // labwc doesnt support preferred buffer scale, so we assume it's done fucking around with scales even if the scale is 120
-    // As far as I can tell from googling labwc has no way to specify scales other
-    // than 1 anyway, so no way to test what it will do in such cases. Sigh, more half baked Wayland shit.
-    window->wl.window_fully_created = window->wl.once.surface_configured || scale != 120 || !_glfw.wl.has_preferred_buffer_scale;
+    // niri and up-to-date mutter and up-to-date kwin all send the fractional
+    // scale before configure (as of Jan 2025). sway as of 1.10 and Hyprland send it after configure.
+    // https://github.com/hyprwm/Hyprland/issues/9126
+    // labwc doesnt support preferred buffer scale and seems to send only a
+    // single fraction scale event before configure https://github.com/kovidgoyal/kitty/issues/7540
+    window->wl.window_fully_created = window->wl.once.surface_configured;
     apply_scale_changes(window, true, true);
 }
 
@@ -616,6 +628,7 @@ static bool createSurface(_GLFWwindow* window,
     update_regions(window);
 
     wl_surface_set_buffer_scale(window->wl.surface, scale);
+    if (_glfw.keyboard_grabbed) inhibit_shortcuts_for(window, true);
     return true;
 }
 
@@ -676,6 +689,12 @@ xdgToplevelHandleConfigure(void* data,
             C(TOPLEVEL_STATE_TILED_BOTTOM);
 #ifdef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
             C(TOPLEVEL_STATE_SUSPENDED);
+#endif
+#ifdef XDG_TOPLEVEL_STATE_CONSTRAINED_LEFT_SINCE_VERSION
+            C(TOPLEVEL_STATE_CONSTRAINED_LEFT);
+            C(TOPLEVEL_STATE_CONSTRAINED_RIGHT);
+            C(TOPLEVEL_STATE_CONSTRAINED_TOP);
+            C(TOPLEVEL_STATE_CONSTRAINED_BOTTOM);
 #endif
 #undef C
         }
@@ -756,6 +775,15 @@ static const struct xdg_toplevel_listener xdgToplevelListener = {
 };
 
 static void
+update_fully_created_on_configure(_GLFWwindow *window) {
+    // See fractional_scale_preferred_scale() for logic
+    if (!window->wl.window_fully_created) {
+        window->wl.window_fully_created = window->wl.once.fractional_scale_received;
+        if (window->wl.window_fully_created) debug("Marked window as fully created in configure event\n");
+    }
+}
+
+static void
 apply_xdg_configure_changes(_GLFWwindow *window) {
     bool suspended_changed = false;
     if (window->wl.pending_state & PENDING_STATE_TOPLEVEL) {
@@ -766,6 +794,7 @@ apply_xdg_configure_changes(_GLFWwindow *window) {
             window->swaps_disallowed = false;
             wait_for_swap_to_commit(window);
             window->wl.once.surface_configured = true;
+            update_fully_created_on_configure(window);
         }
 
 #ifdef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
@@ -955,65 +984,128 @@ find_output_by_name(const char* name) {
     if (!name || !name[0]) return NULL;
     for (int i = 0; i < _glfw.monitorCount; i++) {
         _GLFWmonitor *m = _glfw.monitors[i];
-        if (strcmp(m->wl.friendly_name, name) == 0) return m->wl.output;
+        if (strcmp(m->name, name) == 0) return m->wl.output;
     }
     return NULL;
 }
 
+static enum zwlr_layer_shell_v1_layer
+get_layer_shell_layer(const _GLFWwindow *window) {
+    enum zwlr_layer_shell_v1_layer which_layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND; // Default to background
+    switch (window->wl.layer_shell.config.type) {
+        case GLFW_LAYER_SHELL_BACKGROUND: case GLFW_LAYER_SHELL_NONE: break;
+        case GLFW_LAYER_SHELL_PANEL: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM; break;
+        case GLFW_LAYER_SHELL_TOP: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP; break;
+        case GLFW_LAYER_SHELL_OVERLAY: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; break;
+    }
+    return which_layer;
+}
+
 static void
-layer_set_properties(_GLFWwindow *window) {
+layer_set_properties(const _GLFWwindow *window, bool during_creation, uint32_t width, uint32_t height) {
+#define config window->wl.layer_shell.config
     enum zwlr_layer_surface_v1_anchor which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
-    int exclusive_zone = window->wl.layer_shell.config.requested_exclusive_zone;
+    int exclusive_zone = config.requested_exclusive_zone;
     enum zwlr_layer_surface_v1_keyboard_interactivity focus_policy = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE;
-    switch(window->wl.layer_shell.config.focus_policy) {
+    switch(config.focus_policy) {
         case GLFW_FOCUS_NOT_ALLOWED: focus_policy = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE; break;
         case GLFW_FOCUS_EXCLUSIVE: focus_policy = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE; break;
         case GLFW_FOCUS_ON_DEMAND: focus_policy = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND; break;
     }
     int panel_width = 0, panel_height = 0;
-    switch (window->wl.layer_shell.config.type) {
+    switch (config.type) {
         case GLFW_LAYER_SHELL_NONE: break;
         case GLFW_LAYER_SHELL_BACKGROUND: exclusive_zone = -1; break;
         case GLFW_LAYER_SHELL_TOP:
         case GLFW_LAYER_SHELL_OVERLAY:
         case GLFW_LAYER_SHELL_PANEL:
-            switch (window->wl.layer_shell.config.edge) {
+            switch (config.edge) {
                 case GLFW_EDGE_TOP:
                     which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
-                    panel_height = window->wl.height;
-                    if (!window->wl.layer_shell.config.override_exclusive_zone) exclusive_zone = window->wl.height;
+                    panel_height = height;
+                    if (!config.override_exclusive_zone) exclusive_zone = height;
                     break;
                 case GLFW_EDGE_BOTTOM:
                     which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
-                    panel_height = window->wl.height;
-                    if (!window->wl.layer_shell.config.override_exclusive_zone) exclusive_zone = window->wl.height;
+                    panel_height = height;
+                    if (!config.override_exclusive_zone) exclusive_zone = height;
                     break;
                 case GLFW_EDGE_LEFT:
                     which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
-                    panel_width = window->wl.width;
-                    if (!window->wl.layer_shell.config.override_exclusive_zone) exclusive_zone = window->wl.width;
+                    panel_width = width;
+                    if (!config.override_exclusive_zone) exclusive_zone = width;
                     break;
                 case GLFW_EDGE_RIGHT:
                     which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
-                    panel_width = window->wl.width;
-                    if (!window->wl.layer_shell.config.override_exclusive_zone) exclusive_zone = window->wl.width;
+                    panel_width = width;
+                    if (!config.override_exclusive_zone) exclusive_zone = width;
+                    break;
+                case GLFW_EDGE_CENTER:
+                    break;
+                case GLFW_EDGE_CENTER_SIZED:
+                    panel_width = width; panel_height = height;
                     break;
                 case GLFW_EDGE_NONE:
-                    which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM; // None is anchored to "top left"
-                    panel_width = window->wl.width;
-                    panel_height = window->wl.height;
+                    which_anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
+                    panel_width = width; panel_height = height;
                     break;
             }
     }
 #define surface window->wl.layer_shell.zwlr_layer_surface_v1
     zwlr_layer_surface_v1_set_size(surface, panel_width, panel_height);
-    if (window->wl.wp_viewport) wp_viewport_set_destination(window->wl.wp_viewport, window->wl.width, window->wl.height);
-    debug("Compositor will be informed that layer size: %dx%d viewport: %dx%d at next surface commit\n", panel_width, panel_height, window->wl.width, window->wl.height);
+    debug("Compositor will be informed that layer size: %dx%d viewport: %dx%d at next surface commit\n", panel_width, panel_height, width, height);
     zwlr_layer_surface_v1_set_anchor(surface, which_anchor);
     zwlr_layer_surface_v1_set_exclusive_zone(surface, exclusive_zone);
-    zwlr_layer_surface_v1_set_margin(surface, window->wl.layer_shell.config.requested_top_margin, window->wl.layer_shell.config.requested_right_margin, window->wl.layer_shell.config.requested_bottom_margin, window->wl.layer_shell.config.requested_left_margin);
+    zwlr_layer_surface_v1_set_margin(surface, config.requested_top_margin, config.requested_right_margin, config.requested_bottom_margin, config.requested_left_margin);
+    if (!during_creation) zwlr_layer_surface_v1_set_layer(surface, get_layer_shell_layer(window));
     zwlr_layer_surface_v1_set_keyboard_interactivity(surface, focus_policy);
 #undef surface
+#undef config
+}
+
+static void
+calculate_layer_size(_GLFWwindow *window, uint32_t *width, uint32_t *height) {
+    const GLFWLayerShellConfig *config = &window->wl.layer_shell.config;
+    GLFWvidmode m = {0};
+    if (window->wl.monitorsCount) _glfwPlatformGetVideoMode(window->wl.monitors[0], &m);
+    int monitor_width = m.width, monitor_height = m.height;
+    const int y_margin = config->requested_bottom_margin + config->requested_top_margin, x_margin = config->requested_left_margin + config->requested_right_margin;
+    monitor_width = monitor_width > x_margin ? monitor_width - x_margin : 0;
+    monitor_height = monitor_height > y_margin ? monitor_height - y_margin : 0;
+    float xscale = (float)config->expected.xscale, yscale = (float)config->expected.yscale;
+    if (window->wl.window_fully_created) _glfwPlatformGetWindowContentScale(window, &xscale, &yscale);
+    unsigned cell_width, cell_height; double left_edge_spacing, top_edge_spacing, right_edge_spacing, bottom_edge_spacing;
+    config->size_callback((GLFWwindow*)window, xscale, yscale, &cell_width, &cell_height, &left_edge_spacing, &top_edge_spacing, &right_edge_spacing, &bottom_edge_spacing);
+    double spacing_x = left_edge_spacing + right_edge_spacing;
+    double spacing_y = top_edge_spacing + bottom_edge_spacing;
+    if (config->type == GLFW_LAYER_SHELL_BACKGROUND) {
+        if (!*width) *width = monitor_width;
+        if (!*height) *height = monitor_height;
+        return;
+    }
+    const unsigned xsz = config->x_size_in_pixels ? (unsigned)(config->x_size_in_pixels * xscale) : (cell_width * config->x_size_in_cells);
+    const unsigned ysz = config->y_size_in_pixels ? (unsigned)(config->y_size_in_pixels * yscale) : (cell_height * config->y_size_in_cells);
+    debug("Calculating layer shell window size at scale: %f cell_size: %u %u sz: %u %u\n", xscale, cell_width, cell_height, xsz, ysz);
+    if (config->edge == GLFW_EDGE_LEFT || config->edge == GLFW_EDGE_RIGHT) {
+        if (!*height) *height = monitor_height;
+        double spacing = spacing_x;
+        spacing += xsz / xscale;
+        *width = (uint32_t)(1. + spacing);
+    } else if (config->edge == GLFW_EDGE_TOP || config->edge == GLFW_EDGE_BOTTOM) {
+        if (!*width) *width = monitor_width;
+        double spacing = spacing_y;
+        spacing += ysz / yscale;
+        *height = (uint32_t)(1. + spacing);
+    } else if (config->edge == GLFW_EDGE_CENTER) {
+        if (!*width) *width = monitor_width;
+        if (!*height) *height = monitor_height;
+    } else {
+        spacing_x += xsz / xscale;
+        spacing_y += ysz / yscale;
+        *width = (uint32_t)(1. + spacing_x);
+        *height = (uint32_t)(1. + spacing_y);
+    }
+
 }
 
 static void
@@ -1024,11 +1116,9 @@ layer_surface_handle_configure(void* data, struct zwlr_layer_surface_v1* surface
         window->swaps_disallowed = false;
         wait_for_swap_to_commit(window);
         window->wl.once.surface_configured = true;
+        update_fully_created_on_configure(window);
     }
-    GLFWvidmode m = {0};
-    if (window->wl.monitorsCount) _glfwPlatformGetVideoMode(window->wl.monitors[0], &m);
-    window->wl.layer_shell.config.size_callback(
-            (GLFWwindow*)window, &window->wl.layer_shell.config, m.width, m.height, &width, &height);
+    calculate_layer_size(window, &width, &height);
     zwlr_layer_surface_v1_ack_configure(surface, serial);
     if ((int)width != window->wl.width || (int)height != window->wl.height) {
         debug("Layer shell size changed to %ux%u in layer_surface_handle_configure\n", width, height);
@@ -1036,7 +1126,8 @@ layer_surface_handle_configure(void* data, struct zwlr_layer_surface_v1* surface
         window->wl.width = width; window->wl.height = height;
         resizeFramebuffer(window);
         _glfwInputWindowDamage(window);
-        layer_set_properties(window);
+        layer_set_properties(window, false, window->wl.width, window->wl.height);
+        if (window->wl.wp_viewport) wp_viewport_set_destination(window->wl.wp_viewport, window->wl.width, window->wl.height);
     }
     commit_window_surface_if_safe(window);
     if (!window->wl.window_fully_created) {
@@ -1064,24 +1155,19 @@ create_layer_shell_surface(_GLFWwindow *window) {
     }
     window->decorated = false;  // shell windows must not have decorations
     struct wl_output *wl_output = find_output_by_name(window->wl.layer_shell.config.output_name);
-    enum zwlr_layer_shell_v1_layer which_layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND; // Default to background
-    switch (window->wl.layer_shell.config.type) {
-        case GLFW_LAYER_SHELL_BACKGROUND: break; case GLFW_LAYER_SHELL_NONE: break;
-        case GLFW_LAYER_SHELL_PANEL: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM; break;
-        case GLFW_LAYER_SHELL_TOP: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP; break;
-        case GLFW_LAYER_SHELL_OVERLAY: which_layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; break;
-    }
 #define ls window->wl.layer_shell.zwlr_layer_surface_v1
     ls = zwlr_layer_shell_v1_get_layer_surface(
-            _glfw.wl.zwlr_layer_shell_v1, window->wl.surface, wl_output, which_layer, "kitty");
+            _glfw.wl.zwlr_layer_shell_v1, window->wl.surface, wl_output, get_layer_shell_layer(window), window->wl.appId[0] ? window->wl.appId : "kitty");
     if (!ls) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: layer-surface creation failed");
         return false;
     }
     zwlr_layer_surface_v1_add_listener(ls, &zwlr_layer_surface_v1_listener, window);
-    layer_set_properties(window);
+    layer_set_properties(window, true, window->wl.width, window->wl.height);
+    if (window->wl.wp_viewport) wp_viewport_set_destination(window->wl.wp_viewport, window->wl.width, window->wl.height);
     commit_window_surface(window);
     wl_display_roundtrip(_glfw.wl.display);
+    window->wl.created = true;
 #undef ls
     return true;
 }
@@ -1125,8 +1211,10 @@ create_window_desktop_surface(_GLFWwindow* window)
         zxdg_toplevel_decoration_v1_add_listener(window->wl.xdg.decoration, &xdgDecorationListener, window);
     }
 
-    if (strlen(window->wl.appId))
+    if (window->wl.appId[0])
         xdg_toplevel_set_app_id(window->wl.xdg.toplevel, window->wl.appId);
+    if (window->wl.windowTag[0] && _glfw.wl.xdg_toplevel_tag_manager_v1)
+        xdg_toplevel_tag_manager_v1_set_toplevel_tag(_glfw.wl.xdg_toplevel_tag_manager_v1, window->wl.xdg.toplevel, window->wl.windowTag);
 
     if (window->wl.title)
         xdg_toplevel_set_title(window->wl.xdg.toplevel, window->wl.title);
@@ -1153,6 +1241,7 @@ create_window_desktop_surface(_GLFWwindow* window)
 
     commit_window_surface(window);
     wl_display_roundtrip(_glfw.wl.display);
+    window->wl.created = true;
 
     return true;
 }
@@ -1319,13 +1408,31 @@ struct wl_cursor* _glfwLoadCursor(GLFWCursorShape shape, struct wl_cursor_theme*
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
 
-int _glfwPlatformCreateWindow(_GLFWwindow* window,
-                              const _GLFWwndconfig* wndconfig,
-                              const _GLFWctxconfig* ctxconfig,
-                              const _GLFWfbconfig* fbconfig)
-{
-    window->wl.layer_shell.config = layer_shell_config_for_next_window;
-    memset(&layer_shell_config_for_next_window, 0, sizeof(layer_shell_config_for_next_window));
+static bool
+attach_opengl_context_to_window(_GLFWwindow *window, const _GLFWctxconfig *ctxconfig, const _GLFWfbconfig *fbconfig) {
+    if (ctxconfig->source == GLFW_EGL_CONTEXT_API ||
+        ctxconfig->source == GLFW_NATIVE_CONTEXT_API)
+    {
+        if (!_glfwInitEGL())
+            return false;
+        if (!_glfwCreateContextEGL(window, ctxconfig, fbconfig))
+            return false;
+    }
+    else if (ctxconfig->source == GLFW_OSMESA_CONTEXT_API)
+    {
+        if (!_glfwInitOSMesa())
+            return false;
+        if (!_glfwCreateContextOSMesa(window, ctxconfig, fbconfig))
+            return false;
+    }
+    return true;
+}
+
+int _glfwPlatformCreateWindow(
+    _GLFWwindow* window, const _GLFWwndconfig* wndconfig, const _GLFWctxconfig* ctxconfig, const _GLFWfbconfig* fbconfig,
+    const GLFWLayerShellConfig *lsc
+) {
+    window->wl.layer_shell.config = lsc ? *lsc : (GLFWLayerShellConfig){0};
     csd_initialize_metrics(window);
     window->wl.transparent = fbconfig->transparent;
     strncpy(window->wl.appId, wndconfig->wl.appId, sizeof(window->wl.appId));
@@ -1334,21 +1441,16 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
     if (!createSurface(window, wndconfig)) return false;
     if (wndconfig->title) window->wl.title = _glfw_strdup(wndconfig->title);
     if (wndconfig->maximized) window->wl.maximize_on_first_show = true;
-
-    if (wndconfig->visible)
-    {
-        if (!create_window_desktop_surface(window))
-            return false;
-
+    if (wndconfig->visible) {
+        if (!create_window_desktop_surface(window)) return false;
         window->wl.visible = true;
-    }
-    else
-    {
+    } else {
+        window->wl.visible = false;
         window->wl.xdg.surface = NULL;
         window->wl.xdg.toplevel = NULL;
         window->wl.layer_shell.zwlr_layer_surface_v1 = NULL;
-        window->wl.visible = false;
     }
+
 
     window->wl.currentCursor = NULL;
     // Don't set window->wl.cursorTheme to NULL here.
@@ -1361,24 +1463,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
     // and only then create the OpenGL context.
     if (window->wl.visible) loop_till_window_fully_created(window);
     debug("Creating OpenGL context and attaching it to window\n");
-    if (ctxconfig->client != GLFW_NO_API)
-    {
-        if (ctxconfig->source == GLFW_EGL_CONTEXT_API ||
-            ctxconfig->source == GLFW_NATIVE_CONTEXT_API)
-        {
-            if (!_glfwInitEGL())
-                return false;
-            if (!_glfwCreateContextEGL(window, ctxconfig, fbconfig))
-                return false;
-        }
-        else if (ctxconfig->source == GLFW_OSMESA_CONTEXT_API)
-        {
-            if (!_glfwInitOSMesa())
-                return false;
-            if (!_glfwCreateContextOSMesa(window, ctxconfig, fbconfig))
-                return false;
-        }
-    }
+    if (ctxconfig->client != GLFW_NO_API) attach_opengl_context_to_window(window, ctxconfig, fbconfig);
     return true;
 }
 
@@ -1397,6 +1482,8 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
     if (window->id == _glfw.wl.keyRepeatInfo.keyboardFocusId) {
         _glfw.wl.keyRepeatInfo.keyboardFocusId = 0;
     }
+    if (window->wl.keyboard_shortcuts_inhibitor)
+        zwp_keyboard_shortcuts_inhibitor_v1_destroy(window->wl.keyboard_shortcuts_inhibitor);
 
     if (window->wl.temp_buffer_used_during_window_creation)
         wl_buffer_destroy(window->wl.temp_buffer_used_during_window_creation);
@@ -1424,6 +1511,9 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
     if (window->wl.xdg.surface)
         xdg_surface_destroy(window->wl.xdg.surface);
 
+    if (window->wl.layer_shell.zwlr_layer_surface_v1)
+        zwlr_layer_surface_v1_destroy(window->wl.layer_shell.zwlr_layer_surface_v1);
+
     if (window->wl.surface)
         wl_surface_destroy(window->wl.surface);
 
@@ -1450,11 +1540,55 @@ void _glfwPlatformSetWindowTitle(_GLFWwindow* window, const char* title)
     }
 }
 
-void _glfwPlatformSetWindowIcon(_GLFWwindow* window UNUSED,
-                                int count UNUSED, const GLFWimage* images UNUSED)
-{
-    _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
-                    "Wayland: The platform does not support setting the window icon");
+void
+_glfwPlatformSetWindowIcon(_GLFWwindow* window, int count, const GLFWimage* images) {
+    if (!_glfw.wl.xdg_toplevel_icon_manager_v1) {
+        static bool warned_once = false;
+        if (!warned_once) {
+            _glfwInputError(GLFW_FEATURE_UNAVAILABLE, "Wayland: The compositor does not support changing window icons");
+            warned_once = true;
+        }
+        return;
+    }
+    if (!count) {
+        xdg_toplevel_icon_manager_v1_set_icon(_glfw.wl.xdg_toplevel_icon_manager_v1, window->wl.xdg.toplevel, NULL);
+        return;
+    }
+    struct wl_buffer* *buffers = malloc(sizeof(struct wl_buffer*) * count);
+    if (!buffers) return;
+    size_t total_data_size = 0;
+    for (int i = 0; i < count; i++) total_data_size += images[i].width * images[i].height * 4;
+    int fd = createAnonymousFile(total_data_size);
+    if (fd < 0) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Creating a buffer file for %ld B failed: %s", (long)total_data_size, strerror(errno));
+        free(buffers);
+        return;
+    }
+    unsigned char *data = mmap(NULL, total_data_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: mmap failed: %s", strerror(errno));
+        free(buffers);
+        close(fd);
+        return;
+    }
+    struct wl_shm_pool* pool = wl_shm_create_pool(_glfw.wl.shm, fd, total_data_size);
+    struct xdg_toplevel_icon_v1 *icon = xdg_toplevel_icon_manager_v1_create_icon(_glfw.wl.xdg_toplevel_icon_manager_v1);
+    size_t pos = 0;
+    for (int i = 0; i < count; i++) {
+        const size_t sz = images[i].width * images[i].height * 4;
+        convert_glfw_image_to_wayland_image(images + i, data + pos);
+        buffers[i] = wl_shm_pool_create_buffer(
+                pool, pos, images[i].width, images[i].height, images[i].width * 4, WL_SHM_FORMAT_ARGB8888);
+        xdg_toplevel_icon_v1_add_buffer(icon, buffers[i], 1);
+        pos += sz;
+    }
+    xdg_toplevel_icon_manager_v1_set_icon(_glfw.wl.xdg_toplevel_icon_manager_v1, window->wl.xdg.toplevel, icon);
+    xdg_toplevel_icon_v1_destroy(icon);
+    for (int i = 0; i < count; i++) wl_buffer_destroy(buffers[i]);
+    free(buffers);
+    wl_shm_pool_destroy(pool);
+    munmap(data, total_data_size);
+    close(fd);
 }
 
 void _glfwPlatformGetWindowPos(_GLFWwindow* window UNUSED, int* xpos UNUSED, int* ypos UNUSED)
@@ -1487,6 +1621,11 @@ void _glfwPlatformGetWindowSize(_GLFWwindow* window, int* width, int* height)
 
 void _glfwPlatformSetWindowSize(_GLFWwindow* window, int width, int height)
 {
+    if (is_layer_shell(window)) {
+        _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
+                        "Wayland: Resizing of layer shell surfaces is not supported");
+        return;
+    }
     if (width != window->wl.width || height != window->wl.height) {
         window->wl.user_requested_content_size.width = width;
         window->wl.user_requested_content_size.height = height;
@@ -1608,23 +1747,39 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow* window)
 void _glfwPlatformShowWindow(_GLFWwindow* window)
 {
     if (!window->wl.visible) {
-        create_window_desktop_surface(window);
-        window->wl.visible = true;
+        if (!window->wl.created) {
+            create_window_desktop_surface(window);
+            window->wl.visible = true;
+        } else {
+            // workaround for kwin layer shell bug: https://bugs.kde.org/show_bug.cgi?id=503121
+            if (is_layer_shell(window)) layer_set_properties(window, false, window->wl.width, window->wl.height);
+            window->wl.visible = true;
+            commit_window_surface(window);
+        }
+        debug("Window %llu mapped waiting for configure event from compositor\n", window->id);
     }
 }
 
 void _glfwPlatformHideWindow(_GLFWwindow* window)
 {
-    if (window->wl.xdg.toplevel)
-    {
-        xdg_toplevel_destroy(window->wl.xdg.toplevel);
-        xdg_surface_destroy(window->wl.xdg.surface);
-        window->wl.xdg.toplevel = NULL;
-        window->wl.xdg.surface = NULL;
-        window->wl.once.surface_configured = false;
-        window->swaps_disallowed = true;
-    }
+    if (!window->wl.visible) return;
+    wl_surface_attach(window->wl.surface, NULL, 0, 0);
+    window->wl.once.surface_configured = false;
+    window->swaps_disallowed = true;
     window->wl.visible = false;
+    commit_window_surface(window);
+    debug("Window %llu unmapped\n", window->id);
+}
+
+bool
+_glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig *value) {
+    if (!is_layer_shell(window)) return false;
+    if (value) window->wl.layer_shell.config = *value;
+    uint32_t width, height;
+    calculate_layer_size(window, &width, &height);
+    layer_set_properties(window, false, width, height);
+    commit_window_surface(window);
+    return true;
 }
 
 static void
@@ -2145,6 +2300,7 @@ static void data_source_canceled(void *data UNUSED, struct wl_data_source *wl_da
     if (_glfw.wl.dataSourceForClipboard == wl_data_source) {
         _glfw.wl.dataSourceForClipboard = NULL;
         _glfw_free_clipboard_data(&_glfw.clipboard);
+        _glfwInputClipboardLost(GLFW_CLIPBOARD);
     }
     wl_data_source_destroy(wl_data_source);
 }
@@ -2153,6 +2309,7 @@ static void primary_selection_source_canceled(void *data UNUSED, struct zwp_prim
     if (_glfw.wl.dataSourceForPrimarySelection == primary_selection_source) {
         _glfw.wl.dataSourceForPrimarySelection = NULL;
         _glfw_free_clipboard_data(&_glfw.primary);
+        _glfwInputClipboardLost(GLFW_PRIMARY_SELECTION);
     }
     zwp_primary_selection_source_v1_destroy(primary_selection_source);
 }
@@ -2678,6 +2835,16 @@ _glfwPlatformSetWindowBlur(_GLFWwindow *window, int blur_radius) {
     return has_blur ? 1 : 0;
 }
 
+bool
+_glfwPlatformGrabKeyboard(bool grab) {
+    if (!_glfw.wl.keyboard_shortcuts_inhibit_manager) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "The Wayland compositor does not implement inhibit-keyboard-shortcuts, cannot grab keyboard");
+        return false;
+    }
+    for (_GLFWwindow* window = _glfw.windowListHead; window; window = window->next) inhibit_shortcuts_for(window, grab);
+    return true;
+}
+
 //////////////////////////////////////////////////////////////////////////
 //////                        GLFW native API                       //////
 //////////////////////////////////////////////////////////////////////////
@@ -2753,9 +2920,14 @@ GLFWAPI void glfwWaylandRedrawCSDWindowTitle(GLFWwindow *handle) {
     if (csd_change_title(window)) commit_window_surface_if_safe(window);
 }
 
-GLFWAPI void glfwWaylandSetupLayerShellForNextWindow(const GLFWLayerShellConfig *c) {
-    layer_shell_config_for_next_window = *c;
+const GLFWLayerShellConfig*
+_glfwPlatformGetLayerShellConfig(_GLFWwindow *window) {
+    return &window->wl.layer_shell.config;
 }
+
+GLFWAPI bool glfwIsLayerShellSupported(void) { return _glfw.wl.zwlr_layer_shell_v1 != NULL; }
+
+GLFWAPI bool glfwWaylandIsWindowFullyCreated(GLFWwindow *handle) { return handle != NULL && ((_GLFWwindow*)handle)->wl.window_fully_created; }
 
 void
 _glfwPlatformInputColorScheme(GLFWColorScheme appearance UNUSED) {
@@ -2765,3 +2937,11 @@ _glfwPlatformInputColorScheme(GLFWColorScheme appearance UNUSED) {
         window = window->next;
     }
 }
+
+GLFWAPI bool glfwWaylandBeep(GLFWwindow *handle) {
+    if (!_glfw.wl.xdg_system_bell_v1) return false;
+    _GLFWwindow *window = (_GLFWwindow*)handle;
+    xdg_system_bell_v1_ring(_glfw.wl.xdg_system_bell_v1, window ? window->wl.surface : NULL);
+    return true;
+}
+

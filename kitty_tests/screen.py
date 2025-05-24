@@ -7,7 +7,7 @@ from kitty.marks import marker_from_function, marker_from_regex
 from kitty.rgb import color_names
 from kitty.window import pagerhist
 
-from . import BaseTest, parse_bytes
+from . import BaseTest, draw_multicell, parse_bytes
 
 
 class TestScreen(BaseTest):
@@ -71,6 +71,16 @@ class TestScreen(BaseTest):
         self.ae(s.cursor.x, 5), self.ae(s.cursor.y, 2)
         s.draw('c' * 15)
         self.ae(str(s.line(0)), 'ニチ')
+        s.reset()
+        qt = 'a' * s.columns + '\u0306'
+        s.draw(qt)
+        self.ae(str(s.line(0)), qt)
+        s.reset()
+        s.draw(qt[:-1]), s.draw(qt[-1])
+        self.ae(str(s.line(0)), qt)
+        s.reset()
+        s.draw(qt[:-1]), s.linefeed(), s.carriage_return(), s.draw(qt[-1])
+        self.ae(str(s.line(0)), qt[:-1])
 
         # Now test without line-wrap
         s.reset(), s.reset_dirty()
@@ -84,8 +94,10 @@ class TestScreen(BaseTest):
 
         # Now test in insert mode
         s.reset(), s.reset_dirty()
+        text = '1\u03062345'
         s.set_mode(IRM)
-        s.draw('1\u03062345' * 5)
+        s.draw(text * 5)
+        self.ae(str(s.line(0)), text)
         s.cursor_back(5)
         self.ae(s.cursor.x, 0), self.ae(s.cursor.y, 4)
         s.reset_dirty()
@@ -127,9 +139,9 @@ class TestScreen(BaseTest):
         q = '\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466'
         s.draw(q)
         self.ae(q, str(s.line(0)))
-        self.ae(s.cursor.x, 8)
+        self.ae(s.cursor.x, 2)
         for x in '\u200b\u200c\u200d':
-            s = self.create_screen()
+            s.reset()
             q = f'X{x}Y'
             s.draw(q)
             self.ae(q, str(s.line(0)))
@@ -302,9 +314,8 @@ class TestScreen(BaseTest):
         self.assertTrue(s.historybuf.endswith_wrap())
         self.ae(str(s.historybuf), '111122')
         self.ae(at(), text + '\n')
-        # for some reason rewrap_inner moves the cursor by one cell to the right
-        self.ae((s.cursor.x, s.cursor.y), (4, 0))
-        self.ae(ac(), 'c')
+        self.ae((s.cursor.x, s.cursor.y), (3, 0))
+        self.ae(ac(), 'b')
         s = self.create_screen(cols=4, lines=4, scrollback=4)
         s.draw('1111222'), s.linefeed(), s.carriage_return()
         s.draw('333344445555')
@@ -324,10 +335,10 @@ class TestScreen(BaseTest):
         s.cursor.x, s.cursor.y = 1, 1
         self.ae(ac(), 'b')
         s.resize(s.lines, s.columns * 2)
-        self.ae(ac(), 'c')
+        self.ae(ac(), 'b')
         self.ae(str(s.historybuf), '11112222')
         self.ae(at(), text + '\n\n')
-        self.ae((s.cursor.x, s.cursor.y), (2, 0))
+        self.ae((s.cursor.x, s.cursor.y), (1, 0))
 
         # test that trailing blank line is preserved on resize
         s = self.create_screen(cols=5, lines=5, scrollback=15)
@@ -344,6 +355,10 @@ class TestScreen(BaseTest):
         s.draw('p' * (s.columns + 2)), s.carriage_return()
         s.resize(s.lines, 2)
         self.assertTrue(str(s.line(s.cursor.y)))
+        s = self.create_screen(cols=5, lines=5, scrollback=15)
+        s.draw('12345'), s.carriage_return(), s.index()
+        s.resize(s.lines, s.columns - 1)
+        self.ae(('1234', '5', ''), tuple(str(s.line(i)) for i in range(s.cursor.y+1)))
 
         s = self.create_screen(scrollback=6)
         s.draw(''.join([str(i) * s.columns for i in range(s.lines)]))
@@ -357,8 +372,10 @@ class TestScreen(BaseTest):
         s = self.create_screen(scrollback=20)
         s.draw(''.join(str(i) * s.columns for i in range(s.lines*2)))
         self.ae(str(s.linebuf), '55555\n66666\n77777\n88888\n99999')
+        before = at()
         s.resize(5, 2)
-        self.ae(str(s.linebuf), '88\n88\n99\n99\n9')
+        self.ae(before, at())
+        self.ae(str(s.linebuf), '88\n88\n89\n99\n99')
         s = self.create_screen()
         s.draw('a' * s.columns)
         s.linefeed(), s.carriage_return()
@@ -632,8 +649,10 @@ class TestScreen(BaseTest):
 
         expected = ''.join(('55555', '\n66666', '\n77777', '\n88888', '\n99999'))
         self.ae(ts(), expected)
+        self.ae(ts(True), expected)
         s.scroll(2, True)
         self.ae(ts(), expected)
+        self.ae(ts(True), expected)
         s.reset()
         s.draw('ab   cd')
         s.start_selection(0, 0)
@@ -691,6 +710,9 @@ class TestScreen(BaseTest):
         t('\u25b6', 1, '\ufe0f', 2, '\ufe0e', 2)
         # wide + VS15 + VS16
         t('\U0001f610', 2, '\ufe0e', 1, '\ufe0f', 1)
+        # large numbers of combining chars
+        s.reset()
+        s.draw("\N{HEAVY EXCLAMATION MARK SYMBOL}" + 4500 * "\N{VARIATION SELECTOR-16}")
 
     def test_writing_with_cursor_on_trailer_of_wide_character(self):
         s = self.create_screen()
@@ -1111,37 +1133,8 @@ class TestScreen(BaseTest):
         ac(9, 10)
 
     def test_detect_url(self):
-        s = self.create_screen(cols=30)
-
-        def ae(expected, x=3, y=0):
-            s.detect_url(x, y)
-            url = ''.join(s.text_for_marked_url())
-            self.assertEqual(expected, url)
-
-        def t(url, x=0, y=0, before='', after='', expected=''):
-            s.reset()
-            s.cursor.x = x
-            s.cursor.y = y
-            s.draw(before + url + after)
-            ae(expected or url, x=x + 1 + len(before), y=y)
-
-
-        t('http://moo.com')
-        t('http://moo.com/something?else=+&what-')
-        t('http://moo.com#fragme')
-        for (st, e) in '() {} [] <>'.split():
-            t('http://moo.com', before=st, after=e)
-        for trailer in ')-=':
-            t('http://moo.com' + trailer)
-        for trailer in '{}([<>':   # )]>
-            t('http://moo.com', after=trailer)
-        t('http://moo.com', x=s.columns - 9)
-        t('https://wraps-by-one-char.com', before='[', after=']')
-        t('http://[::1]:8080')
-        t('https://wr[aps-by-one-ch]ar.com')
-        t('http://[::1]:8080/x', after='[')  # ]
-        t('http://[::1]:8080/x]y34', expected='http://[::1]:8080/x')
-        t('https://wraps-by-one-char.com[]/x', after='[')  # ]
+        detect_url(self)
+        detect_url(self, scale=2)
 
     def test_prompt_marking(self):
         # ]]]]]]]]]]]]]]]]}}}}}}}}}}}}}}}}))))))))))))))))))))))
@@ -1170,22 +1163,44 @@ class TestScreen(BaseTest):
         s.toggle_alt_screen()
         self.assertFalse(str(s.line(s.cursor.y)))
 
-        s = self.create_screen()
+        s = self.create_screen(scrollback=10)
+        draw_output(1, 'start')
         for i in range(4):
-            mark_prompt()
-            s.draw(f'$ {i}')
-            s.carriage_return()
-            s.index(), s.index()
+            draw_prompt(str(i) + 'ab')
+            draw_output(1, 'ut')
         self.ae(s.scrolled_by, 0)
+        self.ae(str(s.visual_line(0)), '$ 2ab')
+        self.assertFalse(s.scroll_to_prompt(-3))
+        self.assertTrue(s.scroll_to_prompt())
+        self.ae(str(s.visual_line(0)), '$ 1ab')
+        self.assertTrue(s.scroll_to_prompt())
+        self.ae(str(s.visual_line(0)), '$ 0ab')
+        self.assertFalse(s.scroll_to_prompt())
+        self.assertFalse(s.scroll_to_prompt(4))
+        self.assertTrue(s.scroll_to_prompt(1))
+        self.ae(str(s.visual_line(0)), '$ 1ab')
+        self.assertTrue(s.scroll_to_prompt(1))
+        self.ae(str(s.visual_line(0)), '$ 2ab')
+        self.assertFalse(s.scroll_to_prompt(1))
+        # wrap prompts
+        s.resize(s.lines + 1, s.columns - 2)
+        self.ae(s.scrolled_by, 0)
+        self.ae(str(s.visual_line(0)), 'ab')
+        self.assertFalse(s.scroll_to_prompt(-4))
+        self.assertTrue(s.scroll_to_prompt())
+        self.ae(str(s.visual_line(0)), '$ 2')
         self.assertTrue(s.scroll_to_prompt())
         self.ae(str(s.visual_line(0)), '$ 1')
         self.assertTrue(s.scroll_to_prompt())
         self.ae(str(s.visual_line(0)), '$ 0')
         self.assertFalse(s.scroll_to_prompt())
+        self.assertFalse(s.scroll_to_prompt(4))
         self.assertTrue(s.scroll_to_prompt(1))
         self.ae(str(s.visual_line(0)), '$ 1')
         self.assertTrue(s.scroll_to_prompt(1))
         self.ae(str(s.visual_line(0)), '$ 2')
+        self.assertTrue(s.scroll_to_prompt(1))
+        self.ae(str(s.visual_line(0)), 'ab')
         self.assertFalse(s.scroll_to_prompt(1))
 
         s = self.create_screen()
@@ -1215,6 +1230,14 @@ class TestScreen(BaseTest):
             a = []
             s.cmd_output(2, a.append)
             return ''.join(a)
+
+        s = self.create_screen(cols=5, lines=5, scrollback=15)
+        draw_prompt('P' * s.columns)
+        draw_output(s.lines + 1, 'a')  # ensure prompt is in scrollback
+        draw_prompt('Q' * s.columns)
+        draw_output(s.lines + 1, 'b')  # ensure prompt is in scrollback
+        draw_prompt('R' * s.columns)
+        self.ae(lco(), '0b\n1b\n2b\n3b\n4b\n5b')
 
         s = self.create_screen()
         s.draw('abcd'), s.index(), s.carriage_return()
@@ -1259,10 +1282,19 @@ class TestScreen(BaseTest):
         s.scroll(2, False)
         self.ae(str(s.visual_line(0)), '$ 1')
         self.ae(fco(), '0x\n1x\n')
+        # test: obscure prompt in scrollback
+        s.resize(3, 5)
+        self.ae(str(s.visual_line(0)), '0x')
+        # without succeeding prompt
+        self.ae(fco(), '0x\n1x\n')
+        s.resize(4, 5)
+        draw_prompt('3')
+        # with succeeding prompt
+        self.ae(fco(), '0x\n1x')
 
         # resize
         # get last cmd output with continued output mark
-        draw_prompt('3'), draw_output(1, 'long_line'), draw_output(2, 'l', False)
+        draw_output(1, 'long_line'), draw_output(2, 'l', False)
         s.resize(4, 5)
         s.scroll_to_prompt(-4)
         self.ae(str(s.visual_line(0)), '$ 0')
@@ -1272,6 +1304,76 @@ class TestScreen(BaseTest):
         self.ae(lvco(), '0\n1\n2')
         s.scroll_to_prompt(1)
         self.ae(lvco(), '0x\n1x')
+        # test: obscure prompt
+        s.scroll(2, False)
+        s.set_last_visited_prompt()
+        self.ae(lvco(), '0x\n1x')
+        # test: prompts without output
+        s.scroll(s.scrolled_by, False)
+        s.resize(5, s.columns + 5)
+        draw_prompt('4')
+        s.set_last_visited_prompt(2)
+        self.ae(lvco(), '')
+        draw_prompt('wrapcmd')
+        self.ae(lvco(), '')
+        draw_output(1, 'wrapout'), draw_output(1, 'y', False)
+        s.set_last_visited_prompt(0)
+        self.ae(lvco(), '0wrapout\n0y\n')
+        # wrap long prompt with long output
+        s.resize(5, s.columns - 5)
+        # test: set last visited to previous empty prompt
+        s.scroll_to_prompt(-2)
+        self.ae(str(s.visual_line(0)), '$ 4')
+        self.ae(lvco(), '0wrapout\n0y\n')
+        draw_prompt('end')
+        s.scroll_to_prompt(-1)
+        self.ae(lvco(), '0wrapout\n0y')
+        s.scroll_to_prompt(1)
+        self.ae(lvco(), '0wrapout\n0y')
+        # test: set last visited to continued line of long prompt
+        s.set_last_visited_prompt(1)
+        self.ae(lvco(), '0wrapout\n0y')
+        # test: set last visited to continued line of output
+        s.set_last_visited_prompt(3)
+        self.ae(lvco(), '0wrapout\n0y')
+
+        # test: losing markers past scrollback
+        s = self.create_screen(lines=10, scrollback=0)
+        draw_prompt('a' * (s.columns * 3))
+        draw_output(1, 'v' * (s.columns * 2)), draw_output(1, 'w', False)
+        draw_prompt('b')
+        draw_output(1, 'x')
+        # remove prompt start above, set last visited to within prompt
+        s.clear_scrollback()
+        s.set_last_visited_prompt(0)
+        self.ae(lvco(), '0vvvvvvvvvv\n0w')
+        # remove output start above, set last visited to within output
+        draw_output(3, 'y', False), draw_output(1, 'z', False)
+        s.clear_scrollback()
+        s.set_last_visited_prompt(0)
+        self.ae(lvco(), 'vvvvvv\n0w')
+        draw_output(1, 'end', False)
+        s.clear_scrollback()
+        s.set_last_visited_prompt(0)
+        self.ae(lvco(), 'v\n0w')
+        # clear last visited line without setting new one
+        draw_output(1, 'end', False)
+        s.clear_scrollback()
+        self.ae(lvco(), '')
+
+        # test that post rewrap prompt lines have correct attributes
+        s = self.create_screen(cols=5, lines=5, scrollback=15)
+        draw_prompt('P' * (s.columns - 2))
+        draw_output(s.lines + 1, 'a')  # ensure prompt is in scrollback
+        draw_prompt('Q' * (s.columns - 2))
+        self.ae(str(s.visual_line(0)), '3a')
+        s.scroll_to_prompt()
+        self.ae(str(s.visual_line(0)), '$ PPP')
+        s.scroll_to_prompt(1)
+        self.ae(str(s.visual_line(0)), '3a')
+        s.resize(s.lines, s.columns - 2)
+        s.scroll_to_prompt()
+        self.ae(str(s.visual_line(0)), '$ P')
 
         # last command output without line break
         s = self.create_screen(cols=10, lines=3)
@@ -1375,3 +1477,42 @@ class TestScreen(BaseTest):
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 0, 0), 126)})
         q({'transparent_background_color2': '#ffffff@-1'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 255, 255), 255)})
+
+
+def detect_url(self, scale=1):
+    s = self.create_screen(cols=30 * scale)
+
+    def ae(expected, x=3, y=0):
+        s.detect_url(x * scale, y * scale)
+        url = ''.join(s.text_for_marked_url())
+        self.assertEqual(expected, url)
+
+    def t(url, x=0, y=0, before='', after='', expected=''):
+        s.reset()
+        s.cursor.x = x
+        s.cursor.y = y
+        text = before + url + after
+        if scale == 1:
+            s.draw(text)
+        else:
+            draw_multicell(s, text, scale=scale)
+        ae(expected or url, x=x + 1 + len(before), y=y)
+
+
+    t('http://moo.com')
+    t('http://moo.com/something?else=+&what-')
+    t('http://moo.com#fragme')
+    for (st, e) in '() {} [] <>'.split():
+        t('http://moo.com', before=st, after=e)
+    for trailer in ')-=':
+        t('http://moo.com' + trailer)
+    for trailer in '{}([<>':   # )]>
+        t('http://moo.com', after=trailer)
+    if scale == 1:
+        t('http://moo.com', x=s.columns - 9)
+    t('https://wraps-by-one-char.com', before='[', after=']')
+    t('http://[::1]:8080')
+    t('https://wr[aps-by-one-ch]ar.com')
+    t('http://[::1]:8080/x', after='[')  # ]
+    t('http://[::1]:8080/x]y34', expected='http://[::1]:8080/x')
+    t('https://wraps-by-one-char.com[]/x', after='[')  # ]

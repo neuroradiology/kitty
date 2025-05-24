@@ -71,6 +71,45 @@ convert_from_opts_modify_font(PyObject *py_opts, Options *opts) {
 }
 
 static void
+convert_from_python_box_drawing_scale(PyObject *val, Options *opts) {
+    box_drawing_scale(val, opts);
+}
+
+static void
+convert_from_opts_box_drawing_scale(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "box_drawing_scale");
+    if (ret == NULL) return;
+    convert_from_python_box_drawing_scale(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_undercurl_style(PyObject *val, Options *opts) {
+    opts->undercurl_style = undercurl_style(val);
+}
+
+static void
+convert_from_opts_undercurl_style(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "undercurl_style");
+    if (ret == NULL) return;
+    convert_from_python_undercurl_style(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
+convert_from_python_underline_exclusion(PyObject *val, Options *opts) {
+    underline_exclusion(val, opts);
+}
+
+static void
+convert_from_opts_underline_exclusion(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "underline_exclusion");
+    if (ret == NULL) return;
+    convert_from_python_underline_exclusion(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_text_composition_strategy(PyObject *val, Options *opts) {
     text_composition_strategy(val, opts);
 }
@@ -280,7 +319,7 @@ convert_from_opts_touch_scroll_multiplier(PyObject *py_opts, Options *opts) {
 
 static void
 convert_from_python_mouse_hide_wait(PyObject *val, Options *opts) {
-    opts->mouse_hide_wait = parse_s_double_to_monotonic_t(val);
+    mouse_hide_wait(val, opts);
 }
 
 static void
@@ -462,7 +501,7 @@ convert_from_opts_default_pointer_shape(PyObject *py_opts, Options *opts) {
 
 static void
 convert_from_python_pointer_shape_when_dragging(PyObject *val, Options *opts) {
-    opts->pointer_shape_when_dragging = pointer_shape(val);
+    dragging_pointer_shape(val, opts);
 }
 
 static void
@@ -851,6 +890,19 @@ convert_from_opts_background_blur(PyObject *py_opts, Options *opts) {
 }
 
 static void
+convert_from_python_dynamic_background_opacity(PyObject *val, Options *opts) {
+    opts->dynamic_background_opacity = PyObject_IsTrue(val);
+}
+
+static void
+convert_from_opts_dynamic_background_opacity(PyObject *py_opts, Options *opts) {
+    PyObject *ret = PyObject_GetAttrString(py_opts, "dynamic_background_opacity");
+    if (ret == NULL) return;
+    convert_from_python_dynamic_background_opacity(ret, opts);
+    Py_DECREF(ret);
+}
+
+static void
 convert_from_python_background_image(PyObject *val, Options *opts) {
     background_image(val, opts);
 }
@@ -886,19 +938,6 @@ convert_from_opts_background_image_linear(PyObject *py_opts, Options *opts) {
     PyObject *ret = PyObject_GetAttrString(py_opts, "background_image_linear");
     if (ret == NULL) return;
     convert_from_python_background_image_linear(ret, opts);
-    Py_DECREF(ret);
-}
-
-static void
-convert_from_python_dynamic_background_opacity(PyObject *val, Options *opts) {
-    opts->dynamic_background_opacity = PyObject_IsTrue(val);
-}
-
-static void
-convert_from_opts_dynamic_background_opacity(PyObject *py_opts, Options *opts) {
-    PyObject *ret = PyObject_GetAttrString(py_opts, "dynamic_background_opacity");
-    if (ret == NULL) return;
-    convert_from_python_dynamic_background_opacity(ret, opts);
     Py_DECREF(ret);
 }
 
@@ -1148,6 +1187,12 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     if (PyErr_Occurred()) return false;
     convert_from_opts_modify_font(py_opts, opts);
     if (PyErr_Occurred()) return false;
+    convert_from_opts_box_drawing_scale(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_undercurl_style(py_opts, opts);
+    if (PyErr_Occurred()) return false;
+    convert_from_opts_underline_exclusion(py_opts, opts);
+    if (PyErr_Occurred()) return false;
     convert_from_opts_text_composition_strategy(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_cursor_shape(py_opts, opts);
@@ -1268,13 +1313,13 @@ convert_opts_from_python_opts(PyObject *py_opts, Options *opts) {
     if (PyErr_Occurred()) return false;
     convert_from_opts_background_blur(py_opts, opts);
     if (PyErr_Occurred()) return false;
+    convert_from_opts_dynamic_background_opacity(py_opts, opts);
+    if (PyErr_Occurred()) return false;
     convert_from_opts_background_image(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_background_image_layout(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_background_image_linear(py_opts, opts);
-    if (PyErr_Occurred()) return false;
-    convert_from_opts_dynamic_background_opacity(py_opts, opts);
     if (PyErr_Occurred()) return false;
     convert_from_opts_background_tint(py_opts, opts);
     if (PyErr_Occurred()) return false;

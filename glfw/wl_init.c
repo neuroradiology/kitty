@@ -94,7 +94,6 @@ pointerHandleEnter(
         window->wl.hovered = true;
         window->wl.cursorPosX = x;
         window->wl.cursorPosY = y;
-
         _glfwPlatformSetCursor(window, window->wl.currentCursor);
         _glfwInputCursorEnter(window, true);
     }
@@ -490,8 +489,7 @@ static void registryHandleGlobal(void* data UNUSED,
     }
     else if (is(wl_shm))
     {
-        _glfw.wl.shm =
-            wl_registry_bind(registry, name, &wl_shm_interface, 1);
+        _glfw.wl.shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
     }
     else if (is(wl_output))
     {
@@ -602,6 +600,17 @@ static void registryHandleGlobal(void* data UNUSED,
     else if (is(zwp_idle_inhibit_manager_v1)) {
         _glfw.wl.idle_inhibit_manager = wl_registry_bind(registry, name, &zwp_idle_inhibit_manager_v1_interface, 1);
     }
+    else if (is(zwp_keyboard_shortcuts_inhibit_manager_v1)) {
+        _glfw.wl.keyboard_shortcuts_inhibit_manager = wl_registry_bind(registry, name, &zwp_keyboard_shortcuts_inhibit_manager_v1_interface, 1);
+    }
+    else if (is(xdg_toplevel_icon_manager_v1)) {
+        _glfw.wl.xdg_toplevel_icon_manager_v1 = wl_registry_bind(registry, name, &xdg_toplevel_icon_manager_v1_interface, 1);
+    }
+    else if (is(xdg_system_bell_v1)) {
+        _glfw.wl.xdg_system_bell_v1 = wl_registry_bind(registry, name, &xdg_system_bell_v1_interface, 1);
+    } else if (is(xdg_toplevel_tag_manager_v1)) {
+        _glfw.wl.xdg_toplevel_tag_manager_v1 = wl_registry_bind(registry, name, &xdg_toplevel_tag_manager_v1_interface, 1);
+    }
 #undef is
 }
 
@@ -668,28 +677,61 @@ GLFWAPI pid_t glfwWaylandCompositorPID(void) {
     return get_socket_peer_pid(fd);
 }
 
+const char*
+_glfwWaylandCompositorName(void) {
+    static bool probed = false;
+    if (!probed) {
+        probed = true;
+        static const size_t sz = 1024;
+        _glfw.wl.compositor_name = malloc(sz);
+        if (!_glfw.wl.compositor_name) return "";
+        char *ans = _glfw.wl.compositor_name; ans[0] = 0;
+        pid_t cpid = glfwWaylandCompositorPID();
+        if (cpid < 0) return ans;
+        snprintf(ans, sz, "/proc/%d/cmdline", cpid);
+        int fd = open(ans, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            ans[0] = 0;
+        } else {
+            ssize_t n;
+            while (true) {
+                n = read(fd, ans, sz-1);
+                if (n < 0 && errno == EINTR) continue;
+                close(fd); break;
+            }
+            ans[n < 0 ? 0 : n] = 0;
+        }
+    }
+    return _glfw.wl.compositor_name ? _glfw.wl.compositor_name : "";
+}
+
+
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
 
 static const char*
 get_compositor_missing_capabilities(void) {
-#define C(title, x) if (!_glfw.wl.x) p += snprintf(buf, sizeof(buf) - (p - buf), "%s", #title);
-    static char buf[256];
+#define C(title, x) if (!_glfw.wl.x) p += snprintf(p, sizeof(buf) - (p - buf), "%s ", #title);
+    static char buf[512];
     char *p = buf;
     *p = 0;
     C(viewporter, wp_viewporter); C(fractional_scale, wp_fractional_scale_manager_v1);
     C(blur, org_kde_kwin_blur_manager); C(server_side_decorations, decorationManager);
     C(cursor_shape, wp_cursor_shape_manager_v1); C(layer_shell, zwlr_layer_shell_v1);
     C(single_pixel_buffer, wp_single_pixel_buffer_manager_v1); C(preferred_scale, has_preferred_buffer_scale);
-    C(idle_inhibit, idle_inhibit_manager);
+    C(idle_inhibit, idle_inhibit_manager); C(icon, xdg_toplevel_icon_manager_v1); C(bell, xdg_system_bell_v1);
+    C(window-tag, xdg_toplevel_tag_manager_v1); C(keyboard_shortcuts_inhibit, keyboard_shortcuts_inhibit_manager);
+    if (_glfw.wl.xdg_wm_base_version < 6) p += snprintf(p, sizeof(buf) - (p - buf), "%s ", "window-state-suspended");
+    if (_glfw.wl.xdg_wm_base_version < 5) p += snprintf(p, sizeof(buf) - (p - buf), "%s ", "window-capabilities");
 #undef C
+    while (p > buf && (p - 1)[0] == ' ') { p--; *p = 0; }
     return buf;
 }
 
 GLFWAPI const char* glfwWaylandMissingCapabilities(void) { return get_compositor_missing_capabilities(); }
 
-int _glfwPlatformInit(void)
+int _glfwPlatformInit(bool *supports_window_occlusion)
 {
     int i;
     _GLFWmonitor* monitor;
@@ -780,6 +822,7 @@ int _glfwPlatformInit(void)
         const char *mc = get_compositor_missing_capabilities();
         if (mc && mc[0]) debug("Compositor missing capabilities: %s\n", mc);
     }
+    *supports_window_occlusion = _glfw.wl.xdg_wm_base_version > 5;
 
     return true;
 }
@@ -853,6 +896,12 @@ void _glfwPlatformTerminate(void)
         zwp_primary_selection_device_manager_v1_destroy(_glfw.wl.primarySelectionDeviceManager);
     if (_glfw.wl.xdg_activation_v1)
         xdg_activation_v1_destroy(_glfw.wl.xdg_activation_v1);
+    if (_glfw.wl.xdg_toplevel_icon_manager_v1)
+        xdg_toplevel_icon_manager_v1_destroy(_glfw.wl.xdg_toplevel_icon_manager_v1);
+    if (_glfw.wl.xdg_system_bell_v1)
+        xdg_system_bell_v1_destroy(_glfw.wl.xdg_system_bell_v1);
+    if (_glfw.wl.xdg_toplevel_tag_manager_v1)
+        xdg_toplevel_tag_manager_v1_destroy(_glfw.wl.xdg_toplevel_tag_manager_v1);
     if (_glfw.wl.wp_single_pixel_buffer_manager_v1)
         wp_single_pixel_buffer_manager_v1_destroy(_glfw.wl.wp_single_pixel_buffer_manager_v1);
     if (_glfw.wl.wp_cursor_shape_manager_v1)
@@ -867,6 +916,8 @@ void _glfwPlatformTerminate(void)
         zwlr_layer_shell_v1_destroy(_glfw.wl.zwlr_layer_shell_v1);
     if (_glfw.wl.idle_inhibit_manager)
         zwp_idle_inhibit_manager_v1_destroy(_glfw.wl.idle_inhibit_manager);
+    if (_glfw.wl.keyboard_shortcuts_inhibit_manager)
+        zwp_keyboard_shortcuts_inhibit_manager_v1_destroy(_glfw.wl.keyboard_shortcuts_inhibit_manager);
 
     if (_glfw.wl.registry)
         wl_registry_destroy(_glfw.wl.registry);
@@ -874,8 +925,13 @@ void _glfwPlatformTerminate(void)
     {
         wl_display_flush(_glfw.wl.display);
         wl_display_disconnect(_glfw.wl.display);
+        _glfw.wl.display = NULL;
     }
     finalizePollData(&_glfw.wl.eventLoopData);
+    if (_glfw.wl.compositor_name) {
+        free(_glfw.wl.compositor_name);
+        _glfw.wl.compositor_name = NULL;
+    }
 }
 
 #define GLFW_LOOP_BACKEND wl

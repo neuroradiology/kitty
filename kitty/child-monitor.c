@@ -534,7 +534,7 @@ parse_input(ChildMonitor *self) {
         DECREF_CHILD(scratch[i]);
     }
     if (reload_config_called) {
-        call_boss(load_config_file, "");
+        call_boss(load_config_file, NULL);
     }
     return input_read;
 }
@@ -717,9 +717,9 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
         }
         if (send_cell_data_to_gpu(TD.vao_idx, TD.xstart, TD.ystart, TD.dx, TD.dy, TD.screen, os_window)) needs_render = true;
     }
-    if (OPT(mouse_hide_wait) > 0 && !is_mouse_hidden(os_window)) {
-        if (now - os_window->last_mouse_activity_at >= OPT(mouse_hide_wait)) hide_mouse(os_window);
-        else set_maximum_wait(OPT(mouse_hide_wait) - now + os_window->last_mouse_activity_at);
+    if (OPT(mouse_hide.hide_wait) > 0 && !is_mouse_hidden(os_window)) {
+        if (now - os_window->last_mouse_activity_at >= OPT(mouse_hide.hide_wait)) hide_mouse(os_window);
+        else set_maximum_wait(OPT(mouse_hide.hide_wait) - now + os_window->last_mouse_activity_at);
     }
     Tab *tab = os_window->tabs + os_window->active_tab;
     *active_window_bg = OPT(background);
@@ -793,7 +793,7 @@ draw_resizing_text(OSWindow *w) {
     if (monotonic() - w->created_at > ms_to_monotonic_t(1000) && w->live_resize.num_of_resize_events > 1) {
         char text[32] = {0};
         unsigned int width = w->live_resize.width, height = w->live_resize.height;
-        snprintf(text, sizeof(text), "%u x %u cells", width / w->fonts_data->cell_width, height / w->fonts_data->cell_height);
+        snprintf(text, sizeof(text), "%u x %u cells", width / w->fonts_data->fcm.cell_width, height / w->fonts_data->fcm.cell_height);
         StringCanvas rendered = render_simple_text(w->fonts_data, text);
         if (rendered.canvas) {
             draw_centered_alpha_mask(w, width, height, rendered.width, rendered.height, rendered.canvas, OPT(background_opacity));
@@ -849,14 +849,14 @@ no_render_frame_received_recently(OSWindow *w, monotonic_t now, monotonic_t max_
 }
 
 bool
-render_os_window(OSWindow *w, monotonic_t now, bool ignore_render_frames, bool scan_for_animated_images) {
+render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     if (!w->num_tabs) return false;
     if (!should_os_window_be_rendered(w)) {
         update_os_window_title(w);
         if (w->is_focused) change_menubar_title(w->window_title);
         return false;
     }
-    if (!ignore_render_frames && USE_RENDER_FRAMES && w->render_state != RENDER_FRAME_READY) {
+    if (!w->keep_rendering_till_swap && USE_RENDER_FRAMES && w->render_state != RENDER_FRAME_READY) {
         if (w->render_state == RENDER_FRAME_NOT_REQUESTED || no_render_frame_received_recently(w, now, ms_to_monotonic_t(250ll))) request_frame_render(w);
         // dont respect render frames soon after a resize on Wayland as they cause flicker because
         // we want to fill the newly resized buffer ASAP, not at compositors convenience
@@ -905,10 +905,17 @@ render(monotonic_t now, bool input_read) {
         // rendering is done in cocoa_os_window_resized()
         if (w->live_resize.in_progress) continue;
 #endif
-        if (!render_os_window(w, now, false, scan_for_animated_images)) {
+        if (!render_os_window(w, now, scan_for_animated_images)) {
             // since we didn't scan the window for animations, force a rescan on next wakeup/render frame
             if (scan_for_animated_images) global_state.check_for_active_animated_images = true;
         }
+        if (w->keep_rendering_till_swap) {
+            debug_rendering("Re-rendering window %llu on the %u attempt since swap did not happen\n", w->id, w->keep_rendering_till_swap);
+            set_maximum_wait(OPT(repaint_delay));
+            w->needs_render = true;
+            w->keep_rendering_till_swap--;
+        }
+
     }
     last_render_at = now;
 #undef TD
@@ -1107,8 +1114,11 @@ close_os_window(ChildMonitor *self, OSWindow *os_window) {
     if (os_window->before_fullscreen.is_set && is_os_window_fullscreen(os_window)) {
         w = os_window->before_fullscreen.w; h = os_window->before_fullscreen.h;
     }
+    int x = 0, y = 0;
+    if (os_window->handle && !global_state.is_wayland) glfwGetWindowPos(os_window->handle, &x, &y);
+    bool is_layer_shell = os_window->is_layer_shell;
     destroy_os_window(os_window);
-    call_boss(on_os_window_closed, "Kii", os_window->id, w, h);
+    call_boss(on_os_window_closed, "KiiiiO", os_window->id, x, y, w, h, is_layer_shell ? Py_True : Py_False);
     for (size_t t=0; t < os_window->num_tabs; t++) {
         Tab *tab = os_window->tabs + t;
         for (size_t w = 0; w < tab->num_windows; w++) mark_child_for_close(self, tab->windows[w].id);
@@ -1222,6 +1232,8 @@ process_cocoa_pending_actions(void) {
     if (cocoa_pending_actions[CLOSE_WINDOW]) { call_boss(close_window, NULL); }
     if (cocoa_pending_actions[RESET_TERMINAL]) { call_boss(clear_terminal, "sO", "reset", Py_True ); }
     if (cocoa_pending_actions[CLEAR_TERMINAL_AND_SCROLLBACK]) { call_boss(clear_terminal, "sO", "to_cursor", Py_True ); }
+    if (cocoa_pending_actions[CLEAR_SCROLLBACK]) { call_boss(clear_terminal, "sO", "scrollback", Py_True ); }
+    if (cocoa_pending_actions[CLEAR_SCREEN]) { call_boss(clear_terminal, "sO", "to_cursor_scroll", Py_True ); }
     if (cocoa_pending_actions[RELOAD_CONFIG]) { call_boss(load_config_file, NULL); }
     if (cocoa_pending_actions[TOGGLE_MACOS_SECURE_KEYBOARD_ENTRY]) { call_boss(toggle_macos_secure_keyboard_entry, NULL); }
     if (cocoa_pending_actions[TOGGLE_FULLSCREEN]) { call_boss(toggle_fullscreen, NULL); }
@@ -1941,7 +1953,6 @@ talk_loop(void *data) {
                         p->read.finished = true;
                         p->write.failed = true; p->write.used = 0;
                     }
-                    break;
                 }
             }
         } else if (ret < 0) { if (errno != EAGAIN && errno != EINTR) perror("poll() on talk fds failed"); }
@@ -2042,28 +2053,8 @@ send_data_to_peer(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-static PyObject *
-random_unix_socket(PyObject *self UNUSED, PyObject *args UNUSED) {
-#ifndef SO_PASSCRED
-    errno = ENOTSUP;
-    return PyErr_SetFromErrno(PyExc_OSError);
-#else
-    int fd, optval = 1;
-    struct sockaddr_un bind_addr = {.sun_family=AF_UNIX};
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return PyErr_SetFromErrno(PyExc_OSError);
-    if (setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &optval, sizeof optval) != 0) goto fail;
-    if (bind(fd, (struct sockaddr *)&bind_addr, sizeof(sa_family_t)) != 0) goto fail;
-    return PyLong_FromLong((long)fd);
-fail:
-    safe_close(fd, __FILE__, __LINE__);
-    return PyErr_SetFromErrno(PyExc_OSError);
-#endif
-}
-
 static PyMethodDef module_methods[] = {
     METHODB(safe_pipe, METH_VARARGS),
-    METHODB(random_unix_socket, METH_NOARGS),
     {"add_timer", (PyCFunction)add_python_timer, METH_VARARGS, ""},
     {"remove_timer", (PyCFunction)remove_python_timer, METH_VARARGS, ""},
     METHODB(monitor_pid, METH_VARARGS),

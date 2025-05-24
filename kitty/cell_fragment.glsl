@@ -15,6 +15,7 @@ in vec3 sprite_pos;
 in vec3 underline_pos;
 in vec3 cursor_pos;
 in vec3 strike_pos;
+flat in uint underline_exclusion_pos;
 in vec3 foreground;
 in vec4 cursor_color_premult;
 in vec3 decoration_fg;
@@ -66,8 +67,6 @@ vec4 vec4_premul(vec4 rgba) {
 
 // foreground functions {{{
 #ifdef NEEDS_FOREGROUND
-// sRGB luminance values
-const vec3 Y = vec3(0.2126, 0.7152, 0.0722);
 // Scaling factor for the extra text-alpha adjustment for luminance-difference.
 const float text_gamma_scaling = 0.5;
 
@@ -76,39 +75,22 @@ float clamp_to_unit_float(float x) {
     return clamp(x, 0.0f, 1.0f);
 }
 
-#if (FG_OVERRIDE == 1)
-vec3 fg_override(float under_luminance, float over_lumininace, vec3 over) {
-    // If the difference in luminance is too small,
-    // force the foreground color to be black or white.
-    float diff_luminance = abs(under_luminance - over_lumininace);
-	float override_level = (1.f - colored_sprite) * step(diff_luminance, FG_OVERRIDE_THRESHOLD);
-	float original_level = 1.f - override_level;
-	return original_level * over + override_level * vec3(step(under_luminance, 0.5f));
-}
-#endif
-
+#if TEXT_NEW_GAMMA == 1
 vec4 foreground_contrast(vec4 over, vec3 under) {
     float under_luminance = dot(under, Y);
     float over_lumininace = dot(over.rgb, Y);
-
-#if (FG_OVERRIDE == 1)
-    over.rgb = fg_override(under_luminance, over_lumininace, over.rgb);
-#endif
-
     // Apply additional gamma-adjustment scaled by the luminance difference, the darker the foreground the more adjustment we apply.
     // A multiplicative contrast is also available to increase saturation.
     over.a = clamp_to_unit_float(mix(over.a, pow(over.a, text_gamma_adjustment), (1 - over_lumininace + under_luminance) * text_gamma_scaling) * text_contrast);
     return over;
 }
 
-#if (TEXT_NEW_GAMMA == 0)
-vec4 foreground_contrast_incorrect(vec4 over, vec3 under) {
+#else
+
+vec4 foreground_contrast(vec4 over, vec3 under) {
     // Simulation of gamma-incorrect blending
     float under_luminance = dot(under, Y);
     float over_lumininace = dot(over.rgb, Y);
-#if (FG_OVERRIDE == 1)
-    over.rgb = fg_override(under_luminance, over_lumininace, over.rgb);
-#endif
     // This is the original gamma-incorrect rendering, it is the solution of the following equation:
     //
     // linear2srgb(over * overA2 + under * (1 - overA2)) = linear2srgb(over) * over.a + linear2srgb(under) * (1 - over.a)
@@ -127,7 +109,11 @@ vec4 load_text_foreground_color() {
 
 vec4 calculate_premul_foreground_from_sprites(vec4 text_fg) {
     // Return premul foreground color from decorations (cursor, underline, strikethrough)
+    ivec3 sz = textureSize(sprites, 0);
     float underline_alpha = texture(sprites, underline_pos).a;
+    float underline_exclusion = texelFetch(sprites, ivec3(int(
+        sprite_pos.x * float(sz.x)), int(underline_exclusion_pos), int(sprite_pos.z)), 0).a;
+    underline_alpha *= 1.0f - underline_exclusion;
     float strike_alpha = texture(sprites, strike_pos).a;
     float cursor_alpha = texture(sprites, cursor_pos).a;
     // Since strike and text are the same color, we simply add the alpha values
@@ -140,11 +126,7 @@ vec4 calculate_premul_foreground_from_sprites(vec4 text_fg) {
 vec4 adjust_foreground_contrast_with_background(vec4 text_fg, vec3 bg) {
     // When rendering on a background we can adjust the alpha channel contrast
     // to improve legibility based on the source and destination colors
-#if (TEXT_NEW_GAMMA == 0)
-    return foreground_contrast_incorrect(text_fg, bg);
-#else
     return foreground_contrast(text_fg, bg);
-#endif
 }
 
 #endif

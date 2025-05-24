@@ -212,7 +212,10 @@ def get_data():
     data = base64.standard_b64decode(data)
     with temporary_directory(dir=HOME, prefix='.kitty-ssh-kitten-untar-') as tdir, tarfile.open(fileobj=io.BytesIO(data)) as tf:
         try:
-            tf.extractall(tdir, filter='data')
+            # We have to use fully_trusted as otherwise it refuses to extract,
+            # for example, symlinks that point to absolute paths outside
+            # tdir.
+            tf.extractall(tdir, filter='fully_trusted')
         except TypeError:
             tf.extractall(tdir)
         with open(tdir + '/data.sh') as f:
@@ -284,8 +287,9 @@ def exec_with_shell_integration():
 def install_kitty_bootstrap():
     kitty_remote = os.environ.pop('KITTY_REMOTE', '')
     kitty_exists = shutil.which('kitty')
+    kitty_dir = os.path.join(data_dir, 'kitty', 'bin')
+    os.environ['SSH_KITTEN_KITTY_DIR'] = kitty_dir
     if kitty_remote == 'yes' or (kitty_remote == 'if-needed' and not kitty_exists):
-        kitty_dir = os.path.join(data_dir, 'kitty', 'bin')
         if kitty_exists:
             os.environ['PATH'] = kitty_dir + os.pathsep + os.environ['PATH']
         else:

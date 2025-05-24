@@ -431,7 +431,7 @@ specialize_font_descriptor(PyObject *base_descriptor, double font_sz_in_pts, dou
     FcPatternDestroy(pat); pat = NULL;
     if (!ans) return NULL;
     // fontconfig returns a completely random font if the base descriptor
-    // points to a font that fontconfig hasnt indexed, for example the builting
+    // points to a font that fontconfig hasnt indexed, for example the built-in
     // NERD font
     PyObject *new_path = PyDict_GetItemString(ans, "path");
     if (!new_path || PyObject_RichCompareBool(p, new_path, Py_EQ) != 1) { Py_CLEAR(ans); ans = PyDict_Copy(base_descriptor); if (!ans) return NULL;  }
@@ -505,7 +505,7 @@ create_fallback_face(PyObject UNUSED *base_face, const ListOfChars *lc, bool bol
     if (!emoji_presentation && bold) { AP(FcPatternAddInteger, FC_WEIGHT, FC_WEIGHT_BOLD, "weight"); }
     if (!emoji_presentation && italic) { AP(FcPatternAddInteger, FC_SLANT, FC_SLANT_ITALIC, "slant"); }
     if (emoji_presentation) { AP(FcPatternAddBool, FC_COLOR, true, "color"); }
-    size_t num = cell_as_unicode_for_fallback(lc, char_buf);
+    size_t num = cell_as_unicode_for_fallback(lc, char_buf, arraysz(char_buf));
     add_charset(pat, num);
     d = _fc_match(pat);
 face_from_descriptor:

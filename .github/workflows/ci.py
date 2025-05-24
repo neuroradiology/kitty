@@ -96,7 +96,7 @@ def install_deps() -> None:
         run('sudo apt-get install -y libgl1-mesa-dev libxi-dev libxrandr-dev libxinerama-dev ca-certificates'
             ' libxcursor-dev libxcb-xkb-dev libdbus-1-dev libxkbcommon-dev libharfbuzz-dev libx11-xcb-dev zsh'
             ' libpng-dev liblcms2-dev libfontconfig-dev libxkbcommon-x11-dev libcanberra-dev libxxhash-dev uuid-dev'
-            ' libsimde-dev libsystemd-dev zsh bash dash systemd-coredump gdb')
+            ' libsimde-dev libsystemd-dev libcairo2-dev zsh bash dash systemd-coredump gdb')
         # for some reason these directories are world writable which causes zsh
         # compinit to break
         run('sudo chmod -R og-w /usr/share/zsh')
@@ -193,7 +193,7 @@ def main() -> None:
     elif action == 'test':
         test_kitty()
     elif action == 'gofmt':
-        q = subprocess.check_output('gofmt -s -l tools'.split()).decode()
+        q = subprocess.check_output('gofmt -s -l tools kittens'.split()).decode()
         if q.strip():
             q = '\n'.join(filter(lambda x: not x.rstrip().endswith('_generated.go'), q.strip().splitlines())).strip()
             if q:

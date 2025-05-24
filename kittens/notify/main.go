@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"kitty/tools/cli"
-	"kitty/tools/tty"
-	"kitty/tools/tui/loop"
-	"kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/cli"
+	"github.com/kovidgoyal/kitty/tools/tty"
+	"github.com/kovidgoyal/kitty/tools/tui/loop"
+	"github.com/kovidgoyal/kitty/tools/utils"
 )
 
 var _ = fmt.Print
@@ -25,7 +25,7 @@ const ESC_CODE_SUFFIX = "\x1b\\"
 const CHUNK_SIZE = 4096
 
 func b64encode(x string) string {
-	return base64.RawStdEncoding.EncodeToString(utils.UnsafeStringToBytes(x))
+	return base64.StdEncoding.EncodeToString(utils.UnsafeStringToBytes(x))
 }
 
 func check_id_valid(x string) bool {

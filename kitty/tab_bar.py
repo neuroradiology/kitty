@@ -3,19 +3,18 @@
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from functools import lru_cache, partial, wraps
 from string import Formatter as StringFormatter
 from typing import (
     Any,
-    Callable,
     NamedTuple,
-    Optional,
 )
 
 from .borders import Border, BorderColor
 from .constants import config_dir
 from .fast_data_types import (
+    BOTTOM_EDGE,
     DECAWM,
     Color,
     Region,
@@ -29,9 +28,10 @@ from .fast_data_types import (
     viewport_for_window,
     wcswidth,
 )
+from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
-from .typing import EdgeLiteral, PowerlineStyle
+from .typing_compat import EdgeLiteral, PowerlineStyle
 from .utils import color_as_int, log_error, sgr_sanitizer_pat
 
 
@@ -44,10 +44,13 @@ class TabBarData(NamedTuple):
     num_window_groups: int
     layout_name: str
     has_activity_since_last_focus: bool
-    active_fg: Optional[int]
-    active_bg: Optional[int]
-    inactive_fg: Optional[int]
-    inactive_bg: Optional[int]
+    active_fg: int | None
+    active_bg: int | None
+    inactive_fg: int | None
+    inactive_bg: int | None
+    num_of_windows_with_progress: int
+    total_progress: int
+    last_focused_window_with_progress_id: int
 
 
 class DrawData(NamedTuple):
@@ -62,7 +65,7 @@ class DrawData(NamedTuple):
     inactive_bg: Color
     default_bg: Color
     title_template: str
-    active_title_template: Optional[str]
+    active_title_template: str | None
     tab_activity_symbol: str
     powerline_style: PowerlineStyle
     tab_bar_edge: EdgeLiteral
@@ -166,8 +169,8 @@ class SupSub:
 
 
 class ExtraData:
-    prev_tab: Optional[TabBarData] = None
-    next_tab: Optional[TabBarData] = None
+    prev_tab: TabBarData | None = None
+    next_tab: TabBarData | None = None
     # true if the draw_tab function is called just for layout. In such cases,
     # if drawing is expensive the draw_tab function should avoid drawing and
     # just move the cursor to its final position, as if drawing was performed.
@@ -218,6 +221,36 @@ class TabAccessor:
     def active_oldest_exe(self) -> str:
         tab = get_boss().tab_for_id(self.tab_id)
         return os.path.basename((tab.get_exe_of_active_window(oldest=True) if tab else '') or '')
+
+    @property
+    def last_focused_progress_percent(self) -> str:
+        tab = get_boss().tab_for_id(self.tab_id)
+        if not tab or not tab.last_focused_window_with_progress_id:
+            return ''
+        w = get_boss().window_id_map.get(tab.last_focused_window_with_progress_id)
+        if w is None:
+            return ''
+        if w.progress.state is ProgressState.error:
+            return '  '
+        if w.progress.state is ProgressState.unset:
+            return ''
+        if w.progress.state is ProgressState.indeterminate:
+            return '  '
+        p = f'{w.progress.percent}% '
+        if w.progress.state is ProgressState.paused:
+            return f'  {p}'
+        return p
+
+    @property
+    def progress_percent(self) -> str:
+        tab = get_boss().tab_for_id(self.tab_id)
+        if not tab or not tab.last_focused_window_with_progress_id:
+            return ''
+        if tab.num_of_windows_with_progress <= 1:
+            return self.last_focused_progress_percent
+        p = int(tab.total_progress / tab.num_of_windows_with_progress)
+        return f'{p}% '
+
 
 
 safe_builtins = {
@@ -519,7 +552,7 @@ class TabBar:
             opts.active_tab_title_template,
             opts.tab_activity_symbol,
             opts.tab_powerline_style,
-            'top' if opts.tab_bar_edge == 1 else 'bottom',
+            'bottom' if opts.tab_bar_edge == BOTTOM_EDGE else 'top',
             opts.tab_title_max_length,
         )
         ts = opts.tab_bar_style
@@ -540,7 +573,7 @@ class TabBar:
         else:
             self.align = lambda: None
 
-    def patch_colors(self, spec: dict[str, Optional[int]]) -> None:
+    def patch_colors(self, spec: dict[str, int | None]) -> None:
         opts = get_options()
         atf = spec.get('active_tab_foreground')
         if isinstance(atf, int):
@@ -591,12 +624,12 @@ class TabBar:
         blank_rects: list[Border] = []
         bg = BorderColor.tab_bar_margin_color if opts.tab_bar_margin_color is not None else BorderColor.default_bg
         if opts.tab_bar_margin_height:
-            if opts.tab_bar_edge == 3:  # bottom
+            if opts.tab_bar_edge == BOTTOM_EDGE:
                 if opts.tab_bar_margin_height.outer:
                     blank_rects.append(Border(0, tab_bar.bottom + 1, vw, vh, bg))
                 if opts.tab_bar_margin_height.inner:
                     blank_rects.append(Border(0, central.bottom + 1, vw, vh, bg))
-            else:  # top
+            else: # top
                 if opts.tab_bar_margin_height.outer:
                     blank_rects.append(Border(0, 0, vw, tab_bar.top, bg))
                 if opts.tab_bar_margin_height.inner:
@@ -711,7 +744,7 @@ class TabBar:
         self.screen.reset_callbacks()
         del self.screen
 
-    def tab_at(self, x: int) -> Optional[int]:
+    def tab_at(self, x: int) -> int | None:
         if self.laid_out_once:
             x = (x - self.window_geometry.left) // self.cell_width
             for i, (a, b) in enumerate(self.cell_ranges):

@@ -10,9 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kovidgoyal/kitty"
 	"io"
 	"io/fs"
-	"kitty"
 	"maps"
 	"net/url"
 	"os"
@@ -25,18 +25,19 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
-	"kitty/tools/cli"
-	"kitty/tools/themes"
-	"kitty/tools/tty"
-	"kitty/tools/tui"
-	"kitty/tools/tui/loop"
-	"kitty/tools/tui/shell_integration"
-	"kitty/tools/utils"
-	"kitty/tools/utils/secrets"
-	"kitty/tools/utils/shlex"
-	"kitty/tools/utils/shm"
+	"github.com/kovidgoyal/kitty/tools/cli"
+	"github.com/kovidgoyal/kitty/tools/themes"
+	"github.com/kovidgoyal/kitty/tools/tty"
+	"github.com/kovidgoyal/kitty/tools/tui"
+	"github.com/kovidgoyal/kitty/tools/tui/loop"
+	"github.com/kovidgoyal/kitty/tools/tui/shell_integration"
+	"github.com/kovidgoyal/kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/utils/secrets"
+	"github.com/kovidgoyal/kitty/tools/utils/shlex"
+	"github.com/kovidgoyal/kitty/tools/utils/shm"
 
 	"golang.org/x/sys/unix"
 )
@@ -71,7 +72,7 @@ func get_destination(hostname string) (username, hostname_for_match string) {
 
 func read_data_from_shared_memory(shm_name string) ([]byte, error) {
 	data, err := shm.ReadWithSizeAndUnlink(shm_name, func(s fs.FileInfo) error {
-		if stat, ok := s.Sys().(unix.Stat_t); ok {
+		if stat, ok := s.Sys().(syscall.Stat_t); ok {
 			if os.Getuid() != int(stat.Uid) || os.Getgid() != int(stat.Gid) {
 				return fmt.Errorf("Incorrect owner on SHM file")
 			}

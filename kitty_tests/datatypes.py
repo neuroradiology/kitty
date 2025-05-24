@@ -1,17 +1,28 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 
+from kitty.constants import is_macos, kitty_exe, read_kitty_resource
 from kitty.fast_data_types import (
     Color,
     HistoryBuf,
     LineBuf,
+    abspath,
+    char_props_for,
     expand_ansi_c_escapes,
+    expanduser,
+    get_config_dir,
+    makedirs,
     parse_input_from_terminal,
+    read_file,
     replace_c0_codes_except_nl_space_tab,
+    split_into_graphemes,
     strip_csi,
     truncate_point_for_length,
     wcswidth,
@@ -19,7 +30,7 @@ from kitty.fast_data_types import (
 )
 from kitty.fast_data_types import Cursor as C
 from kitty.rgb import to_color
-from kitty.utils import is_ok_to_read_image_file, is_path_in_temp_dir, sanitize_title, sanitize_url_for_dispay_to_user, shlex_split_with_positions
+from kitty.utils import is_ok_to_read_image_file, is_path_in_temp_dir, sanitize_title, sanitize_url_for_dispay_to_user, shlex_split, shlex_split_with_positions
 
 from . import BaseTest, filled_cursor, filled_history_buf, filled_line_buf
 
@@ -240,19 +251,6 @@ class TestDataTypes(BaseTest):
         l3 = lb.line(0)
         l3.set_text(t, 0, len(t), C())
         self.ae(t, str(l3))
-        l3.right_shift(4, 2)
-        self.ae('0123454567', str(l3))
-        l3.set_text(t, 0, len(t), C())
-        l3.right_shift(0, 0)
-        self.ae(t, str(l3))
-        l3.right_shift(0, 1)
-        self.ae(str(l3), '0' + t[:-1])
-        l3.set_text(t, 0, len(t), C())
-        l3.left_shift(0, 2)
-        self.ae(str(l3), t[2:] + '89')
-        l3.set_text(t, 0, len(t), C())
-        l3.left_shift(7, 3)
-        self.ae(str(l3), t)
 
         l3.set_text(t, 0, len(t), C())
         q = C()
@@ -327,28 +325,25 @@ class TestDataTypes(BaseTest):
         self.ae(l4.url_end_at(0), len(l4) - 2)
         self.ae(l4.url_end_at(0, 0, True), len(l4) - 1)
 
-    def rewrap(self, lb, lb2):
-        hb = HistoryBuf(lb2.ynum, lb2.xnum)
-        cy = lb.rewrap(lb2, hb)
-        return hb, cy[1]
+    def rewrap(self, lb, lines, columns):
+        return lb.rewrap(lines, columns)
 
     def test_rewrap_simple(self):
         ' Same width buffers '
         lb = filled_line_buf(5, 5)
         lb2 = LineBuf(lb.ynum, lb.xnum)
-        self.rewrap(lb, lb2)
+        lb2 = self.rewrap(lb, lb.ynum, lb.xnum)[0]
         for i in range(lb.ynum):
             self.ae(lb2.line(i), lb.line(i))
-        lb2 = LineBuf(8, 5)
-        cy = self.rewrap(lb, lb2)[1]
+        lb2, _, cy = self.rewrap(lb, 8, 5)
         self.ae(cy, 5)
         for i in range(lb.ynum):
-            self.ae(lb2.line(i), lb.line(i))
+            self.ae(lb2.line(i), lb.line(i), i)
         empty = LineBuf(1, lb2.xnum)
         for i in range(lb.ynum, lb2.ynum):
             self.ae(str(lb2.line(i)), str(empty.line(0)))
         lb2 = LineBuf(3, 5)
-        cy = self.rewrap(lb, lb2)[1]
+        lb2, _, cy = self.rewrap(lb, 3, 5)
         self.ae(cy, 3)
         for i in range(lb2.ynum):
             self.ae(lb2.line(i), lb.line(i + 2))
@@ -361,8 +356,7 @@ class TestDataTypes(BaseTest):
             self.ae(l0, str(l2))
 
     def line_comparison_rewrap(self, lb, *lines):
-        lb2 = LineBuf(len(lines), max(map(len, lines)))
-        self.rewrap(lb, lb2)
+        lb2 = self.rewrap(lb, len(lines), max(map(len, lines)))[0]
         self.line_comparison(lb2, *lines)
         return lb2
 
@@ -392,6 +386,7 @@ class TestDataTypes(BaseTest):
     def test_utils(self):
         def w(x):
             return wcwidth(ord(x))
+        self.ae(wcswidth('\x9c'), 0)
         self.ae(wcswidth('a\033[2mb'), 2)
         self.ae(wcswidth('\033a\033[2mb'), 2)
         self.ae(wcswidth('a\033]8;id=moo;https://foo\033\\a'), 2)
@@ -473,6 +468,74 @@ class TestDataTypes(BaseTest):
                 self.assertTrue(is_ok_to_read_image_file(tf.name, tf.fileno()), fifo)
         self.ae(sanitize_url_for_dispay_to_user(
             'h://a\u0430b.com/El%20Ni%C3%B1o/'), 'h://xn--ab-7kc.com/El Niño/')
+        for x in ('~', '~/', '', '~root', '~root/~', '/~', '/a/b/', '~xx/a', '~~'):
+           self.assertEqual(os.path.expanduser(x), expanduser(x), x)
+        for x in (
+            '/', '', '/a', '/ab', '/ab/', '/ab/c', 'a', 'ab', 'ab/', 'ab///c', 'ab/././..', '.', '..', '../', './', '../..', '../.',
+            '/a/../..', '/a/../../', '/a/..', '/ab/../../../cd/.', '///',
+        ):
+           self.assertEqual(os.path.abspath(x), abspath(x), repr(x))
+        self.assertEqual('/', abspath('//'))
+        with tempfile.TemporaryDirectory() as tdir:
+            for x, ex in {
+                'a': None, 'a/b/c': None, 'a/..': None, 'a/../a': None,
+                'a/f': NotADirectoryError, 'a/f/d': NotADirectoryError, 'a/b/c/f/g': NotADirectoryError,
+            }.items():
+                q = os.path.join(tdir, x)
+                if ex is None:
+                    makedirs(q)
+                    open(os.path.join(q, 'f'), 'wb').close()
+                else:
+                    with self.assertRaises(ex, msg=x):
+                        makedirs(q)
+        saved = {x: os.environ.get(x) for x in 'KITTY_CONFIG_DIRECTORY XDG_CONFIG_DIRS XDG_CONFIG_HOME'.split()}
+        try:
+            dot_config = os.path.expanduser('~/.config')
+            if os.path.exists(dot_config):
+                shutil.rmtree(dot_config)
+            with tempfile.TemporaryDirectory() as tdir:
+                with open(tdir + '/macos-launch-services-cmdline', 'w') as f:
+                    print('kitty +runpy "import sys; print(sys.argv[-1])"', file=f)
+                    print('next-line', file=f)
+                    print()
+                if is_macos:
+                    env = os.environ.copy()
+                    env['KITTY_CONFIG_DIRECTORY'] = tdir
+                    env['KITTY_LAUNCHED_BY_LAUNCH_SERVICES'] = '1'
+                    cp = subprocess.run([kitty_exe(), '+runpy', 'import json, sys; print(json.dumps(sys.argv))'], env=env, stdout=subprocess.PIPE)
+                    actual = cp.stdout.strip().decode()
+                    if cp.returncode != 0:
+                        print(actual)
+                        raise AssertionError(f'kitty +runpy failed with return code: {cp.returncode}')
+                    self.ae('next-line', actual)
+                os.makedirs(tdir + '/good/kitty')
+                open(tdir + '/good/kitty/kitty.conf', 'w').close()
+                data = os.urandom(32879)
+                with open(tdir + '/f', 'wb') as f:
+                    f.write(data)
+                self.ae(data, read_file(f.name))
+                for x in (
+                    (f'KITTY_CONFIG_DIRECTORY={tdir}', f'{tdir}'),
+                    (f'XDG_CONFIG_HOME={tdir}/good', f'{tdir}/good/kitty'),
+                    (f'XDG_CONFIG_DIRS={tdir}:{tdir}/good', f'{tdir}/good/kitty'),
+                    (f'XDG_CONFIG_DIRS={tdir}:{tdir}/bad:{tdir}/f', f'{dot_config}/kitty'),
+                    (f'{dot_config}/kitty',),
+                ):
+                    for k in saved:
+                        os.environ.pop(k, None)
+                    for e in x[:-1]:
+                        k, v = e.partition('=')[::2]
+                        os.environ[k] = v
+                    self.assertEqual(x[-1], get_config_dir(), str(x))
+        finally:
+            if os.path.exists(dot_config):
+                shutil.rmtree(dot_config)
+            for k in saved:
+                os.environ.pop(k, None)
+                if saved[k] is not None:
+                    os.environ[k] = saved[k]
+
+
 
     def test_historybuf(self):
         lb = filled_line_buf()
@@ -499,35 +562,31 @@ class TestDataTypes(BaseTest):
             self.ae(str(hb.line(i)).rstrip(), str(3000 - 1 - i))
 
         # rewrap
+        def as_ansi(hb):
+            lines = []
+            hb.as_ansi(lines.append)
+            return ''.join(lines)
         hb = filled_history_buf(5, 5)
-        hb2 = HistoryBuf(hb.ynum, hb.xnum)
-        hb.rewrap(hb2)
+        for i in range(hb.ynum):
+            hb.line(i).set_wrapped_flag(True)
+        before = as_ansi(hb)
+        hb2 = hb.rewrap(10)
+        self.ae(before, as_ansi(hb2).rstrip())
+
+        hb = filled_history_buf(5, 5)
+        hb2 = hb.rewrap(hb.xnum)
         for i in range(hb.ynum):
             self.ae(hb2.line(i), hb.line(i))
-        hb2 = HistoryBuf(8, 5)
-        hb.rewrap(hb2)
-        for i in range(hb.ynum):
-            self.ae(hb2.line(i), hb.line(i))
-        for i in range(hb.ynum, hb2.ynum):
-            with self.assertRaises(IndexError):
-                hb2.line(i)
-        hb2 = HistoryBuf(3, 5)
-        hb.rewrap(hb2)
-        for i in range(hb2.ynum):
-            self.ae(hb2.line(i), hb.line(i))
-        self.ae(hb2.dirty_lines(), list(range(hb2.ynum)))
         hb = filled_history_buf(5, 5)
-        hb2 = HistoryBuf(hb.ynum, hb.xnum * 2)
-        hb.rewrap(hb2)
+        hb2 = hb.rewrap(hb.xnum * 2)
         hb3 = HistoryBuf(hb.ynum, hb.xnum)
-        hb2.rewrap(hb3)
+        hb3 = hb2.rewrap(hb.xnum)
         for i in range(hb.ynum):
             self.ae(hb.line(i), hb3.line(i))
 
         hb2 = HistoryBuf(hb.ynum, hb.xnum)
-        large_hb.rewrap(hb2)
-        hb2 = HistoryBuf(large_hb.ynum, large_hb.xnum)
-        large_hb.rewrap(hb2)
+        hb2 = large_hb.rewrap(hb.xnum)
+        hb2.rewrap(large_hb.xnum)
 
     def test_ansi_repr(self):
         lb = filled_line_buf()
@@ -624,15 +683,30 @@ class TestDataTypes(BaseTest):
         ):
             with self.assertRaises(ValueError, msg=f'Failed to raise exception for {bad!r}'):
                 tuple(shlex_split_with_positions(bad))
+            with self.assertRaises(ValueError, msg=f'Failed to raise exception for {bad!r}'):
+                tuple(shlex_split(bad))
 
         for q, expected in {
+            'a""': ((0, 'a'),),
+            'a""b': ((0, 'ab'),),
+            '-1 "" 2': ((0, '-1'), (3, ''), (6, '2')),
+            "-1 '' 2": ((0, '-1'), (3, ''), (6, '2')),
+            'a ""': ((0, 'a'), (2, '')),
+            '""': ((0, ''),),
             '"ab"': ((0, 'ab'),),
             r'x "ab"y \m': ((0, 'x'), (2, 'aby'), (8, 'm')),
             r'''x'y"\z'1''': ((0, 'xy"\\z1'),),
             r'\abc\ d': ((0, 'abc d'),),
             '': ((0, ''),), '   ': ((0, ''),), ' \tabc\n\t\r ': ((2, 'abc'),),
             "$'ab'": ((0, '$ab'),),
+            '😀': ((0, '😀'),),
+            '"a😀"': ((0, 'a😀'),),
+            '😀 a': ((0, '😀'), (2, 'a')),
+            ' \t😀a': ((2, '😀a'),),
         }.items():
+            ex = tuple(x[1] for x in expected)
+            actual = tuple(shlex_split(q))
+            self.ae(ex, actual, f'Failed for text: {q!r}')
             actual = tuple(shlex_split_with_positions(q))
             self.ae(expected, actual, f'Failed for text: {q!r}')
 
@@ -652,3 +726,55 @@ class TestDataTypes(BaseTest):
         }.items():
             actual = tuple(shlex_split_with_positions(q, True))
             self.ae(expected, actual, f'Failed for text: {q!r}')
+            actual = tuple(shlex_split(q, True))
+            ex = tuple(x[1] for x in expected)
+            self.ae(ex, actual, f'Failed for text: {q!r}')
+
+    def test_split_into_graphemes(self):
+        self.assertEqual(char_props_for('\ue000')['category'], 'Co')
+        self.ae(split_into_graphemes('ab'), ['a', 'b'])
+        s = self.create_screen(cols=12)
+        excluded_chars = set(range(32))
+
+        def is_excluded(text):
+            return bool(set(map(ord, text)) & excluded_chars)
+
+        def adapt_cell_text(cells):
+            for cell in cells:
+                gp = split_into_graphemes(cell)
+                if len(gp) == 1:
+                    yield cell
+                else:
+                    for i, g in enumerate(gp[:-1]):
+                        if wcswidth(gp[i+1][0]) != 0:
+                            raise AssertionError(
+                                f'cell {cell!r} contains grapheme break point at non zero width character for Test #{i}: {test["comment"]}')
+                    yield from gp
+
+        for i, test in enumerate(json.loads(read_kitty_resource('GraphemeBreakTest.json', __name__.rpartition('.')[0]))):
+            expected = test['data']
+            text = ''.join(expected)
+            actual = split_into_graphemes(text)
+            self.ae(expected, actual, f'Test #{i} failed: {test["comment"]}')
+            if is_excluded(text):
+                continue
+            s.carriage_return(), s.erase_in_line()
+            s.draw(' ' + text)
+            actual = []
+            for x in range(s.cursor.x):
+                cell = s.cpu_cells(0, x)
+                if cell['x'] > 0:
+                    continue
+                ct = cell['text']
+                if x == 0:
+                    ct = ct[1:]
+                if ct:
+                    actual.append(ct)
+            self.ae(expected, list(adapt_cell_text(actual)), f'Test #{i} failed: {test["comment"]}')
+        s.reset()
+        s.draw('a' * s.columns)
+        s.draw('\u0306')
+        self.ae(str(s.line(0)), 'a' * s.columns + '\u0306')
+        s.reset()
+        s.draw('\0')
+        self.ae(str(s.line(0)), '')

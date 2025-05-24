@@ -32,11 +32,17 @@ A terminal PDF viewer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 A terminal PDF viewer
 
-.. _tool_mdcat:
+.. _tool_meowpdf:
 
-`mdcat <https://github.com/lunaryorn/mdcat>`_
+`meowpdf <https://github.com/monoamine11231/meowpdf>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A terminal PDF viewer with GUI-like usage and Vim-like keybindings written in Rust
+
+.. _tool_mcat:
+
+`mcat <https://github.com/Skardyy/mcat>`_
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Display markdown files nicely formatted with images in the terminal
+Display various types of files nicely formatted with images in the terminal
 
 .. _tool_ranger:
 
@@ -58,6 +64,13 @@ graphics protocol.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Blazing fast terminal file manager, with built-in kitty graphics protocol support
 (implemented both Classic protocol and Unicode placeholders).
+
+.. _tool_clifm:
+
+`clifm <https://github.com/leo-arch/clifm>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The shell-like, command line terminal file manager, uses the kitty graphics and
+keyboard protocols.
 
 .. _tool_hunter:
 
@@ -196,6 +209,13 @@ Add this to bashrc and then to plot a function, simply do:
 
     iplot 'sin(x*3)*exp(x*.2)'
 
+.. _tool_k-nine:
+
+`k-nine <https://github.com/talwrii/kitty-plotnine>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A wrapper around the :code:`plotnine` library which lets you plot data from the command-line with bash one-liners.
+
 .. tool_tgutui:
 
 `tgutui <https://github.com/tgu-ltd/tgutui>`_
@@ -226,6 +246,13 @@ A tool to display weather information in your terminal with curl
 `wl-clipboard-manager <https://github.com/maximbaz/wl-clipboard-manager>`_
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 View and manage the system clipboard under Wayland in your kitty terminal
+
+.. tool_nemu:
+
+`NEMU <https://github.com/nemuTUI/nemu>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TUI for QEMU used to manage virtual machines, can display the Virtual Machine
+in the terminal using the kitty graphics protocol.
 
 Editor integration
 -----------------------
@@ -263,7 +290,7 @@ Allows easily running tests in a terminal window
 
 Various image viewing plugins for editors
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
+* `snacks.nvim <https://github.com/folke/snacks.nvim>`__ - Enables seamless inline images in various file formats within nvim
 * `image.nvim <https://github.com/3rd/image.nvim>`_ - Bringing images to neovim
 * `image_preview.nvim <https://github.com/adelarsq/image_preview.nvim/>`_ - Image preview for neovim
 * `hologram.nvim <https://github.com/edluffy/hologram.nvim>`_  - view images inside nvim
@@ -290,6 +317,17 @@ Live incremental search of the scrollback buffer.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Keyboard based text selection for the kitty scrollback buffer.
 
+Desktop panels
+-------------------------
+
+`kitty panel <https://github.com/5hubham5ingh/kitty-panel>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A system panel for Kitty terminal that displays real-time system metrics using terminal-based utilities.
+
+
+`pawbar <https://github.com/codelif/pawbar>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A kitten-panel based desktop panel for your desktop
 
 Miscellaneous
 ------------------

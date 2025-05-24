@@ -245,13 +245,13 @@ cell_for_pos(Window *w, unsigned int *x, unsigned int *y, bool *in_left_half_of_
         qx = screen->columns - 1;
         in_left_half = false;
     } else if (mouse_x >= g->left) {
-        double xval = (double)(mouse_x - g->left) / os_window->fonts_data->cell_width;
+        double xval = (double)(mouse_x - g->left) / os_window->fonts_data->fcm.cell_width;
         double fxval = floor(xval);
         qx = (unsigned int)fxval;
         in_left_half = (xval - fxval <= 0.5) ? true : false;
     }
     if (mouse_y >= g->bottom) qy = screen->lines - 1;
-    else if (mouse_y >= g->top) qy = (unsigned int)((double)(mouse_y - g->top) / os_window->fonts_data->cell_height);
+    else if (mouse_y >= g->top) qy = (unsigned int)((double)(mouse_y - g->top) / os_window->fonts_data->fcm.cell_height);
     if (qx < screen->columns && qy < screen->lines) {
         *x = qx; *y = qy;
         *in_left_half_of_cell = in_left_half;
@@ -263,9 +263,11 @@ cell_for_pos(Window *w, unsigned int *x, unsigned int *y, bool *in_left_half_of_
 #define HANDLER(name) static void name(Window UNUSED *w, int UNUSED button, int UNUSED modifiers, unsigned int UNUSED window_idx)
 
 static void
-set_mouse_cursor_when_dragging(void) {
-    if (mouse_cursor_shape != OPT(pointer_shape_when_dragging)) {
-        mouse_cursor_shape = OPT(pointer_shape_when_dragging);
+set_mouse_cursor_when_dragging(Screen *screen) {
+    MouseShape expected_shape = OPT(pointer_shape_when_dragging);
+    if (screen && screen->selections.count && screen->selections.items[0].rectangle_select) expected_shape = OPT(pointer_shape_when_dragging_rectangle);
+    if (mouse_cursor_shape != expected_shape) {
+        mouse_cursor_shape = expected_shape;
         set_mouse_cursor(mouse_cursor_shape);
     }
 }
@@ -276,7 +278,7 @@ update_drag(Window *w) {
     if (screen && screen->selections.in_progress) {
         screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, (SelectionUpdate){0});
     }
-    set_mouse_cursor_when_dragging();
+    set_mouse_cursor_when_dragging(screen);
 }
 
 static bool
@@ -296,7 +298,7 @@ do_drag_scroll(Window *w, bool upwards) {
 
 bool
 drag_scroll(Window *w, OSWindow *frame) {
-    unsigned int margin = frame->fonts_data->cell_height / 2;
+    unsigned int margin = frame->fonts_data->fcm.cell_height / 2;
     double y = frame->mouse_y;
     bool upwards = y <= (w->geometry.top + margin);
     if (upwards || y >= w->geometry.bottom - margin) {
@@ -359,6 +361,14 @@ detect_url(Screen *screen, unsigned int x, unsigned int y) {
 }
 
 static bool
+should_handle_in_kitty(Window *w, Screen *screen, int button) {
+    bool in_tracking_mode = (
+        screen->modes.mouse_tracking_mode == ANY_MODE ||
+        (screen->modes.mouse_tracking_mode == MOTION_MODE && button >= 0));
+    return !in_tracking_mode || global_state.active_drag_in_window == w->id;
+}
+
+static bool
 set_mouse_position(Window *w, bool *mouse_cell_changed, bool *cell_half_changed) {
     unsigned int x = 0, y = 0;
     bool in_left_half_of_cell = false;
@@ -383,11 +393,7 @@ HANDLER(handle_move_event) {
     if (!set_mouse_position(w, &mouse_cell_changed, &cell_half_changed)) return;
     Screen *screen = w->render_data.screen;
     if (OPT(detect_urls)) detect_url(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y);
-    bool in_tracking_mode = (
-        screen->modes.mouse_tracking_mode == ANY_MODE ||
-        (screen->modes.mouse_tracking_mode == MOTION_MODE && button >= 0));
-    bool handle_in_kitty = !in_tracking_mode || global_state.active_drag_in_window == w->id;
-    if (handle_in_kitty) {
+    if (should_handle_in_kitty(w, screen, button)) {
         handle_mouse_movement_in_kitty(w, button, mouse_cell_changed | cell_half_changed);
     } else {
         if (!mouse_cell_changed && screen->modes.mouse_tracking_protocol != SGR_PIXEL_PROTOCOL) return;
@@ -410,7 +416,7 @@ clear_click_queue(Window *w, int button) {
 
 static double
 radius_for_multiclick(void) {
-    return 0.5 * (global_state.callback_os_window ? global_state.callback_os_window->fonts_data->cell_height : 8);
+    return 0.5 * (global_state.callback_os_window ? global_state.callback_os_window->fonts_data->fcm.cell_height : 8);
 }
 
 static bool
@@ -689,14 +695,33 @@ update_mouse_pointer_shape(void) {
 }
 
 void
-enter_event(void) {
+enter_event(int modifiers) {
 #ifdef __APPLE__
     // On cocoa there is no way to configure the window manager to
     // focus windows on mouse enter, so we do it ourselves
     if (OPT(focus_follows_mouse) && !global_state.callback_os_window->is_focused) {
+        id_type wid = global_state.callback_os_window->id;
         focus_os_window(global_state.callback_os_window, false, NULL);
+        if (!global_state.callback_os_window) {
+            global_state.callback_os_window = os_window_for_id(wid);
+            if (!global_state.callback_os_window) return;
+        }
     }
 #endif
+    // If the mouse is grabbed send a move event to update the cursor position
+    // since the last report.
+    if (global_state.redirect_mouse_handling || global_state.active_drag_in_window || global_state.tracked_drag_in_window) return;
+    unsigned window_idx; bool in_tab_bar;
+    Window *w = window_for_event(&window_idx, &in_tab_bar);
+    if (!w || in_tab_bar) return;
+    bool mouse_cell_changed = false;
+    bool cell_half_changed = false;
+    if (!set_mouse_position(w, &mouse_cell_changed, &cell_half_changed)) return;
+    Screen *screen = w->render_data.screen;
+    int button = currently_pressed_button();
+    if (!screen || should_handle_in_kitty(w, screen, button)) return;
+    int sz = encode_mouse_button(w, button, button >=0 ? DRAG : MOVE, modifiers);
+    if (sz > 0) { mouse_event_buf[sz] = 0; write_escape_code_to_child(screen, ESC_CSI, mouse_event_buf); }
 }
 
 static void
@@ -719,6 +744,7 @@ typedef enum MouseSelectionType {
     MOUSE_SELECTION_LINE_FROM_POINT,
     MOUSE_SELECTION_WORD_AND_LINE_FROM_POINT,
     MOUSE_SELECTION_MOVE_END,
+    MOUSE_SELECTION_UPTO_SURROUNDING_WHITESPACE,
 } MouseSelectionType;
 
 
@@ -758,8 +784,11 @@ mouse_selection(Window *w, int code, int button) {
         case MOUSE_SELECTION_MOVE_END:
             extend_selection(w, false, false);
             break;
+        case MOUSE_SELECTION_UPTO_SURROUNDING_WHITESPACE:
+            // TODO: Implement me for people migrating from urxvt
+            break;
     }
-    set_mouse_cursor_when_dragging();
+    set_mouse_cursor_when_dragging(screen);
 #undef S
 }
 
@@ -955,7 +984,7 @@ scroll_event(double xoffset, double yoffset, int flags, int modifiers) {
     bool is_high_resolution = flags & 1;
 
     if (yoffset != 0.0) {
-        s = scale_scroll(screen->modes.mouse_tracking_mode, yoffset, is_high_resolution, &screen->pending_scroll_pixels_y, global_state.callback_os_window->fonts_data->cell_height);
+        s = scale_scroll(screen->modes.mouse_tracking_mode, yoffset, is_high_resolution, &screen->pending_scroll_pixels_y, global_state.callback_os_window->fonts_data->fcm.cell_height);
         if (s) {
             bool upwards = s > 0;
             if (screen->modes.mouse_tracking_mode) {
@@ -976,7 +1005,7 @@ scroll_event(double xoffset, double yoffset, int flags, int modifiers) {
         }
     }
     if (xoffset != 0.0) {
-        s = scale_scroll(screen->modes.mouse_tracking_mode, xoffset, is_high_resolution, &screen->pending_scroll_pixels_x, global_state.callback_os_window->fonts_data->cell_width);
+        s = scale_scroll(screen->modes.mouse_tracking_mode, xoffset, is_high_resolution, &screen->pending_scroll_pixels_x, global_state.callback_os_window->fonts_data->fcm.cell_width);
         if (s) {
             if (screen->modes.mouse_tracking_mode) {
                 int sz = encode_mouse_scroll(w, s > 0 ? 6 : 7, modifiers);
@@ -1090,6 +1119,7 @@ init_mouse(PyObject *module) {
     PyModule_AddIntMacro(module, MOUSE_SELECTION_LINE_FROM_POINT);
     PyModule_AddIntMacro(module, MOUSE_SELECTION_WORD_AND_LINE_FROM_POINT);
     PyModule_AddIntMacro(module, MOUSE_SELECTION_MOVE_END);
+    PyModule_AddIntMacro(module, MOUSE_SELECTION_UPTO_SURROUNDING_WHITESPACE);
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
     return true;
 }

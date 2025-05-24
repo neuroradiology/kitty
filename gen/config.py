@@ -52,8 +52,8 @@ def main(args: list[str]=sys.argv) -> None:
                 all_colors.append(opt.name)
     patch_color_list('tools/cmd/at/set_colors.go', nullable_colors, 'NULLABLE')
     patch_color_list('tools/themes/collection.go', all_colors, 'ALL')
-    nc = '\n    '.join(f'{x!r}' for x in nullable_colors)
-    write_output('kitty', definition, f'\nnullable_colors = frozenset({{\n    {nc}\n}})')
+    nc = ',\n    '.join(f'{x!r}' for x in nullable_colors)
+    write_output('kitty', definition, f'\nnullable_colors = frozenset({{\n    {nc}\n}})\n')
 
 
 if __name__ == '__main__':

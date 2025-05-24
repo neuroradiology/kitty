@@ -794,6 +794,7 @@ typedef enum {
 
 #define GLFW_WAYLAND_APP_ID         0x00025001
 #define GLFW_WAYLAND_BGCOLOR        0x00025002
+#define GLFW_WAYLAND_WINDOW_TAG     0x00025003
 /*! @} */
 
 #define GLFW_NO_API                          0
@@ -1040,24 +1041,30 @@ typedef struct GLFWkeyevent
 
 typedef enum { GLFW_LAYER_SHELL_NONE, GLFW_LAYER_SHELL_BACKGROUND, GLFW_LAYER_SHELL_PANEL, GLFW_LAYER_SHELL_TOP, GLFW_LAYER_SHELL_OVERLAY } GLFWLayerShellType;
 
-typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_NONE } GLFWEdge;
+typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_CENTER, GLFW_EDGE_NONE, GLFW_EDGE_CENTER_SIZED } GLFWEdge;
 
 typedef enum { GLFW_FOCUS_NOT_ALLOWED, GLFW_FOCUS_EXCLUSIVE, GLFW_FOCUS_ON_DEMAND} GLFWFocusPolicy;
 
 typedef struct GLFWLayerShellConfig {
     GLFWLayerShellType type;
     GLFWEdge edge;
-    char output_name[64];
+    struct {
+        GLFWEdge edge;
+        int requested_top_margin, requested_left_margin, requested_bottom_margin, requested_right_margin;
+    } previous;
+    bool was_toggled_to_fullscreen;
+    char output_name[128];
     GLFWFocusPolicy focus_policy;
-    unsigned x_size_in_cells;
-    unsigned y_size_in_cells;
-    unsigned requested_top_margin;
-    unsigned requested_left_margin;
-    unsigned requested_bottom_margin;
-    unsigned requested_right_margin;
-    int requested_exclusive_zone;
+    unsigned x_size_in_cells, x_size_in_pixels;
+    unsigned y_size_in_cells, y_size_in_pixels;
+    int requested_top_margin, requested_left_margin, requested_bottom_margin, requested_right_margin;
+    int requested_exclusive_zone, hide_on_focus_loss;
     unsigned override_exclusive_zone;
-    void (*size_callback)(GLFWwindow *window, const struct GLFWLayerShellConfig *config, unsigned monitor_width, unsigned monitor_height, uint32_t *width, uint32_t *height);
+    void (*size_callback)(GLFWwindow *window, float xscale, float yscale, unsigned *cell_width, unsigned *cell_height, double *left_edge_spacing, double *top_edge_spacing, double *right_edge_spacing, double *bottom_edge_spacing);
+    struct { float xscale, yscale; } expected;
+    struct {
+        float background_opacity; int background_blur, color_space;
+    } related;
 } GLFWLayerShellConfig;
 
 typedef struct GLFWDBUSNotificationData {
@@ -1169,6 +1176,7 @@ typedef void (* GLFWwindowclosefun)(GLFWwindow*);
  *  @ingroup window
  */
 typedef void (* GLFWapplicationclosefun)(int);
+
 
 /*! @brief The function pointer type for system color theme change callbacks.
  *
@@ -1552,6 +1560,7 @@ typedef enum {
 typedef GLFWDataChunk (* GLFWclipboarditerfun)(const char *mime_type, void *iter, GLFWClipboardType ctype);
 typedef bool (* GLFWclipboardwritedatafun)(void *object, const char *data, size_t sz);
 typedef bool (* GLFWimecursorpositionfun)(GLFWwindow *window, GLFWIMEUpdateEvent *ev);
+typedef void (* GLFWclipboardlostfun )(GLFWClipboardType);
 
 /*! @brief Video mode type.
  *
@@ -1707,13 +1716,13 @@ typedef struct GLFWgamepadstate
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int,unsigned long);
 typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef bool (* GLFWhandleurlopen)(const char*);
-typedef void (* GLFWapplicationwillfinishlaunchingfun)(void);
+typedef void (* GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
 typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
 typedef void (*GLFWDBusnotificationcreatedfun)(unsigned long long, uint32_t, void*);
 typedef void (*GLFWDBusnotificationactivatedfun)(uint32_t, int, const char*);
-typedef int (*glfwInit_func)(monotonic_t);
+typedef int (*glfwInit_func)(monotonic_t, bool*);
 GFW_EXTERN glfwInit_func glfwInit_impl;
 #define glfwInit glfwInit_impl
 
@@ -1752,6 +1761,10 @@ GFW_EXTERN glfwSetHasCurrentSelectionCallback_func glfwSetHasCurrentSelectionCal
 typedef GLFWimecursorpositionfun (*glfwSetIMECursorPositionCallback_func)(GLFWimecursorpositionfun);
 GFW_EXTERN glfwSetIMECursorPositionCallback_func glfwSetIMECursorPositionCallback_impl;
 #define glfwSetIMECursorPositionCallback glfwSetIMECursorPositionCallback_impl
+
+typedef bool (*glfwIsLayerShellSupported_func)(void);
+GFW_EXTERN glfwIsLayerShellSupported_func glfwIsLayerShellSupported_impl;
+#define glfwIsLayerShellSupported glfwIsLayerShellSupported_impl
 
 typedef void (*glfwTerminate_func)(void);
 GFW_EXTERN glfwTerminate_func glfwTerminate_impl;
@@ -1805,6 +1818,10 @@ typedef const char* (*glfwGetMonitorName_func)(GLFWmonitor*);
 GFW_EXTERN glfwGetMonitorName_func glfwGetMonitorName_impl;
 #define glfwGetMonitorName glfwGetMonitorName_impl
 
+typedef const char* (*glfwGetMonitorDescription_func)(GLFWmonitor*);
+GFW_EXTERN glfwGetMonitorDescription_func glfwGetMonitorDescription_impl;
+#define glfwGetMonitorDescription glfwGetMonitorDescription_impl
+
 typedef void (*glfwSetMonitorUserPointer_func)(GLFWmonitor*, void*);
 GFW_EXTERN glfwSetMonitorUserPointer_func glfwSetMonitorUserPointer_impl;
 #define glfwSetMonitorUserPointer glfwSetMonitorUserPointer_impl
@@ -1849,7 +1866,7 @@ typedef void (*glfwWindowHintString_func)(int, const char*);
 GFW_EXTERN glfwWindowHintString_func glfwWindowHintString_impl;
 #define glfwWindowHintString glfwWindowHintString_impl
 
-typedef GLFWwindow* (*glfwCreateWindow_func)(int, int, const char*, GLFWmonitor*, GLFWwindow*);
+typedef GLFWwindow* (*glfwCreateWindow_func)(int, int, const char*, GLFWmonitor*, GLFWwindow*, const GLFWLayerShellConfig*);
 GFW_EXTERN glfwCreateWindow_func glfwCreateWindow_impl;
 #define glfwCreateWindow glfwCreateWindow_impl
 
@@ -1864,6 +1881,14 @@ GFW_EXTERN glfwIsFullscreen_func glfwIsFullscreen_impl;
 typedef bool (*glfwAreSwapsAllowed_func)(const GLFWwindow*);
 GFW_EXTERN glfwAreSwapsAllowed_func glfwAreSwapsAllowed_impl;
 #define glfwAreSwapsAllowed glfwAreSwapsAllowed_impl
+
+typedef const GLFWLayerShellConfig* (*glfwGetLayerShellConfig_func)(GLFWwindow*);
+GFW_EXTERN glfwGetLayerShellConfig_func glfwGetLayerShellConfig_impl;
+#define glfwGetLayerShellConfig glfwGetLayerShellConfig_impl
+
+typedef bool (*glfwSetLayerShellConfig_func)(GLFWwindow*, const GLFWLayerShellConfig*);
+GFW_EXTERN glfwSetLayerShellConfig_func glfwSetLayerShellConfig_impl;
+#define glfwSetLayerShellConfig glfwSetLayerShellConfig_impl
 
 typedef void (*glfwDestroyWindow_func)(GLFWwindow*);
 GFW_EXTERN glfwDestroyWindow_func glfwDestroyWindow_impl;
@@ -2017,6 +2042,10 @@ typedef GLFWsystemcolorthemechangefun (*glfwSetSystemColorThemeChangeCallback_fu
 GFW_EXTERN glfwSetSystemColorThemeChangeCallback_func glfwSetSystemColorThemeChangeCallback_impl;
 #define glfwSetSystemColorThemeChangeCallback glfwSetSystemColorThemeChangeCallback_impl
 
+typedef GLFWclipboardlostfun (*glfwSetClipboardLostCallback_func)(GLFWclipboardlostfun);
+GFW_EXTERN glfwSetClipboardLostCallback_func glfwSetClipboardLostCallback_impl;
+#define glfwSetClipboardLostCallback glfwSetClipboardLostCallback_impl
+
 typedef GLFWColorScheme (*glfwGetCurrentSystemColorTheme_func)(bool);
 GFW_EXTERN glfwGetCurrentSystemColorTheme_func glfwGetCurrentSystemColorTheme_impl;
 #define glfwGetCurrentSystemColorTheme glfwGetCurrentSystemColorTheme_impl
@@ -2060,6 +2089,10 @@ GFW_EXTERN glfwGetIgnoreOSKeyboardProcessing_func glfwGetIgnoreOSKeyboardProcess
 typedef void (*glfwSetIgnoreOSKeyboardProcessing_func)(bool);
 GFW_EXTERN glfwSetIgnoreOSKeyboardProcessing_func glfwSetIgnoreOSKeyboardProcessing_impl;
 #define glfwSetIgnoreOSKeyboardProcessing glfwSetIgnoreOSKeyboardProcessing_impl
+
+typedef bool (*glfwGrabKeyboard_func)(int);
+GFW_EXTERN glfwGrabKeyboard_func glfwGrabKeyboard_impl;
+#define glfwGrabKeyboard glfwGrabKeyboard_impl
 
 typedef int (*glfwGetInputMode_func)(GLFWwindow*, int);
 GFW_EXTERN glfwGetInputMode_func glfwGetInputMode_impl;
@@ -2333,9 +2366,13 @@ typedef void (*glfwWaylandRedrawCSDWindowTitle_func)(GLFWwindow*);
 GFW_EXTERN glfwWaylandRedrawCSDWindowTitle_func glfwWaylandRedrawCSDWindowTitle_impl;
 #define glfwWaylandRedrawCSDWindowTitle glfwWaylandRedrawCSDWindowTitle_impl
 
-typedef void (*glfwWaylandSetupLayerShellForNextWindow_func)(const GLFWLayerShellConfig*);
-GFW_EXTERN glfwWaylandSetupLayerShellForNextWindow_func glfwWaylandSetupLayerShellForNextWindow_impl;
-#define glfwWaylandSetupLayerShellForNextWindow glfwWaylandSetupLayerShellForNextWindow_impl
+typedef bool (*glfwWaylandIsWindowFullyCreated_func)(GLFWwindow*);
+GFW_EXTERN glfwWaylandIsWindowFullyCreated_func glfwWaylandIsWindowFullyCreated_impl;
+#define glfwWaylandIsWindowFullyCreated glfwWaylandIsWindowFullyCreated_impl
+
+typedef bool (*glfwWaylandBeep_func)(GLFWwindow*);
+GFW_EXTERN glfwWaylandBeep_func glfwWaylandBeep_impl;
+#define glfwWaylandBeep glfwWaylandBeep_impl
 
 typedef pid_t (*glfwWaylandCompositorPID_func)(void);
 GFW_EXTERN glfwWaylandCompositorPID_func glfwWaylandCompositorPID_impl;
@@ -2352,13 +2389,5 @@ GFW_EXTERN glfwDBusSetUserNotificationHandler_func glfwDBusSetUserNotificationHa
 typedef int (*glfwSetX11LaunchCommand_func)(GLFWwindow*, char**, int);
 GFW_EXTERN glfwSetX11LaunchCommand_func glfwSetX11LaunchCommand_impl;
 #define glfwSetX11LaunchCommand glfwSetX11LaunchCommand_impl
-
-typedef void (*glfwSetX11WindowAsDock_func)(int32_t);
-GFW_EXTERN glfwSetX11WindowAsDock_func glfwSetX11WindowAsDock_impl;
-#define glfwSetX11WindowAsDock glfwSetX11WindowAsDock_impl
-
-typedef void (*glfwSetX11WindowStrut_func)(int32_t, uint32_t[12]);
-GFW_EXTERN glfwSetX11WindowStrut_func glfwSetX11WindowStrut_impl;
-#define glfwSetX11WindowStrut glfwSetX11WindowStrut_impl
 
 const char* load_glfw(const char* path);

@@ -29,11 +29,8 @@ from kittens.tui.operations import Mode
 from kittens.tui.spinners import spinners
 from kitty.actions import get_all_actions
 from kitty.cli import (
-    CompletionSpec,
     GoOption,
     go_options_for_seq,
-    parse_option_spec,
-    serialize_as_go_string,
 )
 from kitty.conf.generate import gen_go_code
 from kitty.conf.types import Definition
@@ -45,6 +42,7 @@ from kitty.options.types import Options
 from kitty.rc.base import RemoteCommand, all_command_names, command_for_name
 from kitty.remote_control import global_options_spec
 from kitty.rgb import color_names
+from kitty.simple_cli_definitions import CompletionSpec, parse_option_spec, serialize_as_go_string
 
 if __name__ == '__main__' and not __package__:
     import __main__
@@ -179,6 +177,32 @@ def stringify() -> None:
         stringify_file(path)
 # }}}
 
+# {{{ Bitfields
+
+def make_bitfields() -> None:
+    from kitty.fast_data_types import SCALE_BITS, SUBSCALE_BITS, WIDTH_BITS
+
+    from .bitfields import make_bitfield
+
+    def mb(*args: str) -> None:
+        output_path, ans = make_bitfield(*args)
+        with replace_if_needed(output_path) as buf:
+            print(ans, file=buf)
+
+    mb(
+        'tools/vt', 'CellAttrs',
+        'decoration 3', 'bold 1', 'italic 1', 'reverse 1', 'strike 1', 'dim 1', 'hyperlink_id 16',
+    )
+    mb('tools/vt', 'Ch', 'is_idx 1', 'ch_or_idx 31')
+    mb(
+        'tools/vt', 'MultiCell',
+        'is_multicell 1', 'natural_width 1', f'scale {SCALE_BITS}', f'subscale_n {SUBSCALE_BITS}', f'subscale_d {SUBSCALE_BITS}',
+        f'width {WIDTH_BITS}', f'x {WIDTH_BITS + SCALE_BITS + 1}', f'y {SCALE_BITS + 1}', 'vertical_align 3',
+    )
+    mb('tools/vt', 'CellColor', 'is_idx 1', 'red 8', 'green 8', 'blue 8')
+    mb('tools/vt', 'LineAttrs', 'prompt_kind 2',)
+# }}}
+
 # Completions {{{
 
 @lru_cache
@@ -235,9 +259,9 @@ def completion_for_launch_wrappers(*names: str) -> None:
 
 def generate_completions_for_kitty() -> None:
     print('package completion\n')
-    print('import "kitty/tools/cli"')
-    print('import "kitty/tools/cmd/tool"')
-    print('import "kitty/tools/cmd/at"')
+    print('import "github.com/kovidgoyal/kitty/tools/cli"')
+    print('import "github.com/kovidgoyal/kitty/tools/cmd/tool"')
+    print('import "github.com/kovidgoyal/kitty/tools/cmd/at"')
 
     print('func kitty(root *cli.Command) {')
 
@@ -426,15 +450,6 @@ def go_code_for_remote_command(name: str, cmd: RemoteCommand, template: str) -> 
 
 # kittens {{{
 
-@lru_cache
-def wrapped_kittens() -> tuple[str, ...]:
-    with open('shell-integration/ssh/kitty') as f:
-        for line in f:
-            if line.startswith('    wrapped_kittens="'):
-                val = line.strip().partition('"')[2][:-1]
-                return tuple(sorted(filter(None, val.split())))
-    raise Exception('Failed to read wrapped kittens from kitty wrapper script')
-
 
 def generate_conf_parser(kitten: str, defn: Definition) -> None:
     with replace_if_needed(f'kittens/{kitten}/conf_generated.go'):
@@ -443,7 +458,7 @@ def generate_conf_parser(kitten: str, defn: Definition) -> None:
 
 
 def generate_extra_cli_parser(name: str, spec: str) -> None:
-    print('import "kitty/tools/cli"')
+    print('import "github.com/kovidgoyal/kitty/tools/cli"')
     go_opts = tuple(go_options_for_seq(parse_option_spec(spec)[0]))
     print(f'type {name}_options struct ''{')
     for opt in go_opts:
@@ -488,10 +503,13 @@ def kitten_clis() -> None:
 
         with replace_if_needed(f'kittens/{kitten}/cli_generated.go'):
             od = []
+            ser = []
             kcd = kitten_cli_docs(kitten)
             has_underscore = '_' in kitten
             print(f'package {kitten}')
-            print('import "kitty/tools/cli"')
+            print('import "fmt"')
+            print('import "github.com/kovidgoyal/kitty/tools/cli"')
+            print('var _ = fmt.Sprintf')
             print('func create_cmd(root *cli.Command, run_func func(*cli.Command, *Options, []string)(int, error)) {')
             print('ans := root.AddSubCommand(&cli.Command{')
             print(f'Name: "{kitten}",')
@@ -512,6 +530,7 @@ def kitten_clis() -> None:
             for opt in gopts:
                 print(opt.as_option('ans'))
                 od.append(opt.struct_declaration())
+                ser.append('\n'.join(opt.as_string_for_commandline()))
             if ac is not None:
                 print(''.join(ac.as_go_code('ans.ArgCompleter', ' = ')))
             if not kcd:
@@ -523,6 +542,14 @@ def kitten_clis() -> None:
             print('}')
             print('type Options struct {')
             print('\n'.join(od))
+            print('}')
+            print('func (opts Options) AsCommandLine() (ans []string) {')
+            if ser:
+                print('\t sval := ""')
+                print('\t _ = sval')
+                for x in ser:
+                    print('\t' + x)
+            print('return')
             print('}')
 
 # }}}
@@ -696,7 +723,7 @@ def update_at_commands() -> None:
     odef = '\n'.join(opt_def)
     code = f'''
 package at
-import "kitty/tools/cli"
+import "github.com/kovidgoyal/kitty/tools/cli"
 type rc_global_options struct {{
 {sdef}
 }}
@@ -724,7 +751,7 @@ def update_completion() -> None:
 
     with replace_if_needed('tools/cmd/edit_in_kitty/launch_generated.go'):
         print('package edit_in_kitty')
-        print('import "kitty/tools/cli"')
+        print('import "github.com/kovidgoyal/kitty/tools/cli"')
         print('func AddCloneSafeOpts(cmd *cli.Command) {')
         completion_for_launch_wrappers('cmd')
         print(''.join(CompletionSpec.from_string('type:file mime:text/* group:"Text files"').as_go_code('cmd.ArgCompleter', ' = ')))
@@ -906,6 +933,7 @@ def main(args: list[str]=sys.argv) -> None:
     update_at_commands()
     kitten_clis()
     stringify()
+    make_bitfields()
     print(json.dumps(changed, indent=2))
     stdout, stderr = simdgen_process.communicate()
     if simdgen_process.wait() != 0:

@@ -331,7 +331,7 @@ struct _GLFWwndconfig
         char      instanceName[256];
     } x11;
     struct {
-        char      appId[256];
+        char      appId[256], windowTag[256];
         uint32_t  bgcolor;
     } wl;
 };
@@ -490,7 +490,7 @@ struct _GLFWwindow
 //
 struct _GLFWmonitor
 {
-    char*           name;
+    const char *name, *description;
     void*           userPointer;
 
     // Physical dimensions in millimeters.
@@ -616,7 +616,7 @@ struct _GLFWlibrary
     _GLFWtls            contextSlot;
     _GLFWmutex          errorLock;
 
-    bool                ignoreOSKeyboardProcessing;
+    bool                ignoreOSKeyboardProcessing, keyboard_grabbed;
 
     struct {
         bool            available;
@@ -644,6 +644,7 @@ struct _GLFWlibrary
         GLFWmonitorfun  monitor;
         GLFWjoystickfun joystick;
         GLFWapplicationclosefun application_close;
+        GLFWclipboardlostfun clipboard_lost;
         GLFWsystemcolorthemechangefun system_color_theme_change;
         GLFWdrawtextfun draw_text;
         GLFWcurrentselectionfun get_current_selection;
@@ -667,12 +668,16 @@ struct _GLFWlibrary
 //
 extern _GLFWlibrary _glfw;
 
+typedef struct GeometryRect { int x, y, width, height; } GeometryRect;
+typedef struct MonitorGeometry {
+    GeometryRect full, workarea;
+} MonitorGeometry;
 
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
 
-int _glfwPlatformInit(void);
+int _glfwPlatformInit(bool*);
 void _glfwPlatformTerminate(void);
 const char* _glfwPlatformGetVersionString(void);
 
@@ -708,14 +713,13 @@ void _glfwPlatformTerminateJoysticks(void);
 int _glfwPlatformPollJoystick(_GLFWjoystick* js, int mode);
 void _glfwPlatformUpdateGamepadGUID(char* guid);
 
-int _glfwPlatformCreateWindow(_GLFWwindow* window,
-                              const _GLFWwndconfig* wndconfig,
-                              const _GLFWctxconfig* ctxconfig,
-                              const _GLFWfbconfig* fbconfig);
+int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconfig, const _GLFWctxconfig* ctxconfig, const _GLFWfbconfig* fbconfig, const GLFWLayerShellConfig *lsc);
 void _glfwPlatformDestroyWindow(_GLFWwindow* window);
 void _glfwPlatformSetWindowTitle(_GLFWwindow* window, const char* title);
 void _glfwPlatformSetWindowIcon(_GLFWwindow* window,
                                 int count, const GLFWimage* images);
+bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig *value);
+const GLFWLayerShellConfig* _glfwPlatformGetLayerShellConfig(_GLFWwindow* window);
 void _glfwPlatformGetWindowPos(_GLFWwindow* window, int* xpos, int* ypos);
 void _glfwPlatformSetWindowPos(_GLFWwindow* window, int xpos, int ypos);
 void _glfwPlatformGetWindowSize(_GLFWwindow* window, int* width, int* height);
@@ -809,6 +813,7 @@ void _glfwInputWindowCloseRequest(_GLFWwindow* window);
 void _glfwInputWindowMonitor(_GLFWwindow* window, _GLFWmonitor* monitor);
 
 void _glfwInputKeyboard(_GLFWwindow *window, GLFWkeyevent *ev);
+void _glfwInputClipboardLost(GLFWClipboardType which);
 void _glfwInputScroll(_GLFWwindow* window, double xoffset, double yoffset, int flags, int mods);
 void _glfwInputMouseClick(_GLFWwindow* window, int button, int action, int mods);
 void _glfwInputCursorPos(_GLFWwindow* window, double xpos, double ypos);
@@ -878,6 +883,8 @@ unsigned long long _glfwPlatformAddTimer(monotonic_t interval, bool repeats, GLF
 void _glfwPlatformUpdateTimer(unsigned long long timer_id, monotonic_t interval, bool enabled);
 void _glfwPlatformRemoveTimer(unsigned long long timer_id);
 int _glfwPlatformSetWindowBlur(_GLFWwindow* handle, int value);
+MonitorGeometry _glfwPlatformGetMonitorGeometry(_GLFWmonitor* monitor);
+bool _glfwPlatformGrabKeyboard(bool grab);
 
 char* _glfw_strdup(const char* source);
 

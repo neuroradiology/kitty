@@ -7,7 +7,7 @@ from collections import defaultdict
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager, suppress
 from itertools import count
-from typing import TYPE_CHECKING, DefaultDict, Optional, TypedDict
+from typing import TYPE_CHECKING, DefaultDict, Iterable, Mapping, Optional, TypedDict
 
 import kitty.fast_data_types as fast_data_types
 
@@ -84,12 +84,12 @@ else:
 
 
 @run_once
-def checked_terminfo_dir() -> Optional[str]:
+def checked_terminfo_dir() -> str | None:
     return terminfo_dir if os.path.isdir(terminfo_dir) else None
 
 
 def processes_in_group(grp: int) -> list[int]:
-    gmap: Optional[DefaultDict[int, list[int]]] = getattr(process_group_map, 'cached_map', None)
+    gmap: DefaultDict[int, list[int]] | None = getattr(process_group_map, 'cached_map', None)
     if gmap is None:
         try:
             gmap = process_group_map()
@@ -110,6 +110,13 @@ def cached_process_data() -> Generator[None, None, None]:
     finally:
         delattr(process_group_map, 'cached_map')
 
+
+def session_id(pids: Iterable[int]) -> int:
+    for pid in pids:
+        with suppress(OSError):
+            if (sid := os.getsid(pid)) > -1:
+                return sid
+    return -1
 
 def parse_environ_block(data: str) -> dict[str, str]:
     """Parse a C environ block of environment variables into a dictionary."""
@@ -138,23 +145,24 @@ def environ_of_process(pid: int) -> dict[str, str]:
     return parse_environ_block(_environ_of_process(pid))
 
 
-def process_env() -> dict[str, str]:
-    ans = dict(os.environ)
+def process_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    ans = dict(os.environ if env is None else env)
     ssl_env_var = getattr(sys, 'kitty_ssl_env_var', None)
     if ssl_env_var is not None:
         ans.pop(ssl_env_var, None)
     ans.pop('XDG_ACTIVATION_TOKEN', None)
+    ans.pop('VTE_VERSION', None)  # Used by the stupid VTE shell integration script that is installed system wide, sigh
     return ans
 
 
 def default_env() -> dict[str, str]:
-    ans: Optional[dict[str, str]] = getattr(default_env, 'env', None)
+    ans: dict[str, str] | None = getattr(default_env, 'env', None)
     if ans is None:
         return process_env()
     return ans
 
 
-def set_default_env(val: Optional[dict[str, str]] = None) -> None:
+def set_default_env(val: dict[str, str] | None = None) -> None:
     env = process_env().copy()
     has_lctype = False
     if val:
@@ -187,9 +195,9 @@ def base64_terminfo_data() -> str:
 
 
 class ProcessDesc(TypedDict):
-    cwd: Optional[str]
+    cwd: str | None
     pid: int
-    cmdline: Optional[Sequence[str]]
+    cmdline: Sequence[str] | None
 
 
 child_counter = count()
@@ -197,16 +205,16 @@ child_counter = count()
 
 class Child:
 
-    child_fd: Optional[int] = None
-    pid: Optional[int] = None
+    child_fd: int | None = None
+    pid: int | None = None
     forked = False
 
     def __init__(
         self,
         argv: Sequence[str],
         cwd: str,
-        stdin: Optional[bytes] = None,
-        env: Optional[dict[str, str]] = None,
+        stdin: bytes | None = None,
+        env: dict[str, str] | None = None,
         cwd_from: Optional['CwdRequest'] = None,
         is_clone_launch: str = '',
         add_listen_on_env_var: bool = True,
@@ -279,7 +287,7 @@ class Child:
             env.pop('KITTY_IS_CLONE_LAUNCH', None)
         return env
 
-    def fork(self) -> Optional[int]:
+    def fork(self) -> int | None:
         if self.forked:
             return None
         opts = fast_data_types.get_options()
@@ -383,6 +391,14 @@ class Child:
             ans = list(self.argv)
         return ans
 
+    def process_desc(self, pid: int) -> ProcessDesc:
+        ans: ProcessDesc = {'pid': pid, 'cmdline': None, 'cwd': None}
+        with suppress(Exception):
+            ans['cmdline'] = self.cmdline_of_pid(pid)
+        with suppress(Exception):
+            ans['cwd'] = cwd_of_process(pid) or None
+        return ans
+
     @property
     def foreground_processes(self) -> list[ProcessDesc]:
         if self.child_fd is None:
@@ -390,16 +406,28 @@ class Child:
         try:
             pgrp = os.tcgetpgrp(self.child_fd)
             foreground_processes = processes_in_group(pgrp) if pgrp >= 0 else []
+            return [self.process_desc(x) for x in foreground_processes]
+        except Exception:
+            return []
 
-            def process_desc(pid: int) -> ProcessDesc:
-                ans: ProcessDesc = {'pid': pid, 'cmdline': None, 'cwd': None}
-                with suppress(Exception):
-                    ans['cmdline'] = self.cmdline_of_pid(pid)
-                with suppress(Exception):
-                    ans['cwd'] = cwd_of_process(pid) or None
-                return ans
+    @property
+    def background_processes(self) -> list[ProcessDesc]:
+        if self.child_fd is None:
+            return []
+        try:
+            foreground_process_group_id = os.tcgetpgrp(self.child_fd)
+            if foreground_process_group_id < 0:
+                return []
+            gmap = process_group_map()
 
-            return [process_desc(x) for x in foreground_processes]
+            sid = session_id(gmap.get(foreground_process_group_id, ()))
+            if sid < 0:
+                return []
+            ans: list[ProcessDesc] = []
+            for grp_id, pids in gmap.items():
+                if grp_id != foreground_process_group_id and session_id(pids) == sid:
+                    ans.extend(map(self.process_desc, pids))
+            return ans
         except Exception:
             return []
 
@@ -428,13 +456,13 @@ class Child:
             return self.final_env.copy()
 
     @property
-    def current_cwd(self) -> Optional[str]:
+    def current_cwd(self) -> str | None:
         with suppress(Exception):
             assert self.pid is not None
             return cwd_of_process(self.pid)
         return None
 
-    def get_pid_for_cwd(self, oldest: bool = False) -> Optional[int]:
+    def get_pid_for_cwd(self, oldest: bool = False) -> int | None:
         with suppress(Exception):
             assert self.child_fd is not None
             pgrp = os.tcgetpgrp(self.child_fd)
@@ -454,17 +482,17 @@ class Child:
         return self.pid
 
     @property
-    def pid_for_cwd(self) -> Optional[int]:
+    def pid_for_cwd(self) -> int | None:
         return self.get_pid_for_cwd()
 
-    def get_foreground_cwd(self, oldest: bool = False) -> Optional[str]:
+    def get_foreground_cwd(self, oldest: bool = False) -> str | None:
         with suppress(Exception):
             pid = self.get_pid_for_cwd(oldest)
             if pid is not None:
                 return cwd_of_process(pid) or None
         return None
 
-    def get_foreground_exe(self, oldest: bool = False) -> Optional[str]:
+    def get_foreground_exe(self, oldest: bool = False) -> str | None:
         with suppress(Exception):
             pid = self.get_pid_for_cwd(oldest)
             if pid is not None:
@@ -474,7 +502,7 @@ class Child:
         return None
 
     @property
-    def foreground_cwd(self) -> Optional[str]:
+    def foreground_cwd(self) -> str | None:
         return self.get_foreground_cwd()
 
     @property
@@ -499,7 +527,7 @@ class Child:
             return False
         cc = t[-1]
         if key_num == cc[termios.VINTR]:
-            s = signal.SIGINT
+            s: signal.Signals = signal.SIGINT
         elif key_num == cc[termios.VSUSP]:
             s = signal.SIGTSTP
         elif key_num == cc[termios.VQUIT]:

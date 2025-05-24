@@ -1,5 +1,4 @@
 import termios
-from ctypes import Array, c_ubyte
 from typing import Any, Callable, Dict, Iterator, List, Literal, NewType, Optional, Tuple, TypedDict, Union, overload
 
 from kitty.boss import Boss
@@ -8,10 +7,14 @@ from kitty.fonts.render import FontObject
 from kitty.marks import MarkerFunc
 from kitty.notifications import MacOSNotificationCategory
 from kitty.options.types import Options
+from kitty.simple_cli_definitions import OptionDict
 from kitty.types import LayerShellConfig, SignalInfo
-from kitty.typing import EdgeLiteral, NotRequired, ReadableBuffer, WriteableBuffer
+from kitty.typing_compat import EdgeLiteral, NotRequired, ReadableBuffer, WriteableBuffer
 
 # Constants {{{
+SCALE_BITS: int
+WIDTH_BITS: int
+SUBSCALE_BITS: int
 GLFW_LAYER_SHELL_NONE: int
 GLFW_LAYER_SHELL_PANEL: int
 GLFW_LAYER_SHELL_TOP: int
@@ -21,6 +24,8 @@ GLFW_EDGE_TOP: int
 GLFW_EDGE_BOTTOM: int
 GLFW_EDGE_LEFT: int
 GLFW_EDGE_RIGHT: int
+GLFW_EDGE_CENTER: int
+GLFW_EDGE_CENTER_SIZED: int
 GLFW_EDGE_NONE: int
 GLFW_FOCUS_NOT_ALLOWED: int
 GLFW_FOCUS_EXCLUSIVE: int
@@ -39,6 +44,7 @@ MOUSE_SELECTION_NORMAL: int
 MOUSE_SELECTION_WORD: int
 MOUSE_SELECTION_RECTANGLE: int
 MOUSE_SELECTION_LINE_FROM_POINT: int
+MOUSE_SELECTION_UPTO_SURROUNDING_WHITESPACE: int
 MOUSE_SELECTION_WORD_AND_LINE_FROM_POINT: int
 MOUSE_SELECTION_MOVE_END: int
 KITTY_VCS_REV: str
@@ -276,7 +282,6 @@ GRAPHICS_PROGRAM: int
 MARK: int
 MARK_MASK: int
 DECORATION_MASK: int
-NUM_UNDERLINE_STYLES: int
 FILE_TRANSFER_CODE: int
 ESC_CSI: int
 ESC_OSC: int
@@ -308,6 +313,10 @@ WINDOW_NORMAL: int = 0
 WINDOW_FULLSCREEN: int
 WINDOW_MAXIMIZED: int
 WINDOW_MINIMIZED: int
+WINDOW_HIDDEN: int
+TEXT_SIZE_CODE: int
+TOP_EDGE: int
+BOTTOM_EDGE: int
 # }}}
 
 
@@ -325,10 +334,6 @@ def encode_key_for_tty(
 
 
 def log_error_string(s: str) -> None:
-    pass
-
-
-def redirect_std_streams(devnull: str) -> None:
     pass
 
 
@@ -449,7 +454,10 @@ class Face:
     def identify_for_debug(self) -> str: ...
     def postscript_name(self) -> str: ...
     def set_size(self, sz_in_pts: float, dpi_x: float, dpi_y: float) -> None: ...
-    def render_sample_text(self, text: str, width: int, height: int, fg_color: int = 0xffffff) -> Tuple[bytes, int, int]: ...
+    def render_sample_text(
+        self, text: str, width: int, height: int, fg_color: int = 0xffffff
+    ) -> tuple[bytes, int, int]: ...
+    def render_codepoint(self, cp: int, fg_color: int = 0xffffff) -> tuple[bytes, int, int]: ...
     def get_variation(self) -> Optional[Dict[str, float]]: ...
     def get_features(self) -> Dict[str, Optional[FeatureData]]: ...
     def applied_features(self) -> Dict[str, str]: ...
@@ -486,7 +494,10 @@ class CTFace:
     def identify_for_debug(self) -> str: ...
     def postscript_name(self) -> str: ...
     def set_size(self, sz_in_pts: float, dpi_x: float, dpi_y: float) -> None: ...
-    def render_sample_text(self, text: str, width: int, height: int, fg_color: int = 0xffffff) -> Tuple[bytes, int, int]: ...
+    def render_sample_text(
+        self, text: str, width: int, height: int, fg_color: int = 0xffffff,
+    ) -> tuple[bytes, int, int]: ...
+    def render_codepoint(self, cp: int, fg_color: int = 0xffffff) -> tuple[bytes, int, int]: ...
     def get_variation(self) -> Optional[Dict[str, float]]: ...
     def get_features(self) -> Dict[str, Optional[FeatureData]]: ...
     def applied_features(self) -> Dict[str, str]: ...
@@ -635,12 +646,18 @@ def get_options() -> Options:
     pass
 
 
-def glfw_primary_monitor_size() -> Tuple[int, int]:
+def glfw_primary_monitor_size() -> tuple[int, int]:
+    pass
+
+def glfw_get_monitor_workarea() -> tuple[tuple[int, int, int, int], ...]:
     pass
 
 
 def set_default_window_icon(path: str) -> None:
     pass
+
+
+def set_os_window_icon(os_window_id: int, path: str | None | bytes = None) -> None: ...
 
 
 def set_custom_cursor(
@@ -667,7 +684,7 @@ def glfw_terminate() -> None:
 def glfw_init(
     path: str, edge_spacing_func: Callable[[EdgeLiteral], float], debug_keyboard: bool = False, debug_rendering: bool = False,
     wayland_enable_ime: bool = True
-) -> bool:
+) -> tuple[bool, bool]:
     pass
 
 
@@ -696,7 +713,10 @@ def set_background_image(
     os_window_ids: Tuple[int, ...],
     configured: bool = True,
     layout_name: Optional[str] = None,
-    png_data: bytes = b''
+    png_data: bytes = b'',
+    linear: bool | None = None,
+    tint: float | None = None,
+    tint_gaps: float | None = None,
 ) -> None:
     pass
 
@@ -821,8 +841,8 @@ class ColorProfile:
 
     def __init__(self, opts: Optional[Options] = None): ...
 
-    def as_dict(self) -> Dict[str, int | None | tuple[tuple[Color, float], ...]]:
-        pass
+    def as_dict(self) -> Dict[str, int | None | tuple[tuple[Color, float], ...]]: ...
+    def basic_colors(self) -> Dict[str, int | None | tuple[tuple[Color, float], ...]]: ...
 
     def as_color(self, val: int) -> Optional[Color]:
         pass
@@ -879,6 +899,10 @@ def cocoa_set_app_icon(icon_path: str, app_path: Optional[str] = None) -> None:
 
 
 def cocoa_set_dock_icon(icon_path: str) -> None:
+    pass
+
+
+def cocoa_show_progress_bar_on_dock_icon(progress: float = -100) -> None:
     pass
 
 
@@ -994,11 +1018,11 @@ def set_active_window(os_window_id: int, tab_id: int, window_id: int) -> None:
     pass
 
 
-def ring_bell() -> None:
+def ring_bell(os_window_id: int = 0) -> None:
     pass
 
 
-def concat_cells(cell_width: int, cell_height: int, is_32_bit: bool, cells: Tuple[bytes, ...]) -> bytes:
+def concat_cells(cell_width: int, cell_height: int, is_32_bit: bool, cells: Tuple[bytes, ...], bgcolor: int = 0) -> bytes:
     pass
 
 
@@ -1107,8 +1131,7 @@ def parse_input_from_terminal(
 
 class Line:
 
-    def sprite_at(self, cell: int) -> Tuple[int, int, int]:
-        pass
+    def sprite_at(self, cell: int) -> int: ...
 
 
 def test_shape(line: Line,
@@ -1132,12 +1155,7 @@ def set_send_sprite_to_gpu(
 
 
 def set_font_data(
-    box_drawing_func: Callable[[int, int, int, float],
-                               Tuple[int, Union[bytearray, bytes, Array[c_ubyte]]]],
-    prerender_func: Callable[
-        [int, int, int, int, int, int, int, float, float, float, float],
-        Tuple[Tuple[int, ...], Tuple[Array[c_ubyte], ...]]],
-    descriptor_for_idx: Callable[[int], Tuple[FontObject, bool, bool]],
+    descriptor_for_idx: Callable[[int], Tuple[Union[FontObject|str], bool, bool]],
     bold: int, italic: int, bold_italic: int, num_symbol_fonts: int,
     symbol_maps: Tuple[Tuple[int, int, int], ...], font_sz_in_pts: float,
     narrow_symbols: Tuple[Tuple[int, int, int], ...],
@@ -1149,9 +1167,7 @@ def get_fallback_font(text: str, bold: bool, italic: bool) -> Any:
     pass
 
 
-def create_test_font_group(sz: float, dpix: float,
-                           dpiy: float) -> Tuple[int, int]:
-    pass
+def create_test_font_group(sz: float, dpix: float, dpiy: float) -> tuple[int, int, int]: ...
 
 
 class HistoryBuf:
@@ -1218,6 +1234,7 @@ class Screen:
     def test_create_write_buffer(self) -> memoryview: ...
     def test_commit_write_buffer(self, inp: memoryview, output: memoryview) -> int: ...
     def test_parse_written_data(self, dump_callback: None = None) -> None: ...
+    def hyperlink_for_id(self, hyperlink_id: int) -> str: ...
 
     def cursor_at_prompt(self) -> bool:
         pass
@@ -1289,6 +1306,9 @@ class Screen:
         pass
 
     def scroll_to_prompt(self, num_of_prompts: int = -1) -> bool:
+        pass
+
+    def set_last_visited_prompt(self, visual_y: int = 0) -> bool:
         pass
 
     def reverse_scroll(self, amt: int, fill_from_scrollback: bool = False) -> bool:
@@ -1531,6 +1551,7 @@ class OSWindowSize(TypedDict):
     ydpi: float
     cell_width: int
     cell_height: int
+    is_layer_shell: bool
 
 
 def mark_os_window_dirty(os_window_id: int) -> None:
@@ -1550,6 +1571,7 @@ def set_os_window_pos(os_window_id: int, x: int, y: int) -> None:
 def get_all_processes() -> Tuple[int, ...]:
     pass
 
+def glfw_get_monitor_names() -> tuple[tuple[str, str], ...]: ...
 
 def num_users() -> int:
     pass
@@ -1588,10 +1610,6 @@ def shm_unlink(name: str) -> None:
 
 
 def sigqueue(pid: int, signal: int, value: int) -> None:
-    pass
-
-
-def random_unix_socket() -> int:
     pass
 
 
@@ -1663,6 +1681,8 @@ class AES256GCMDecrypt:
 class Shlex:
     def __init__(self, src: str, allow_ansi_quoted_strings: bool = False): ...
     def next_word(self) -> Tuple[int, str]: ...
+    def __next__(self) -> str: ...
+    def __iter__(self) -> Iterator[str]: ...
 
 
 class SingleKey:
@@ -1691,8 +1711,10 @@ def get_docs_ref_map() -> bytes: ...
 def set_clipboard_data_types(ct: int, mime_types: Tuple[str, ...]) -> None: ...
 def get_clipboard_mime(ct: int, mime: Optional[str], callback: Callable[[bytes], None]) -> None: ...
 def run_with_activation_token(func: Callable[[str], None]) -> bool: ...
-def make_x11_window_a_dock_window(x11_window_id: int, strut: Tuple[int, int, int, int, int, int, int, int, int, int, int, int]) -> None: ...
-def unicode_database_version() -> Tuple[int, int, int]: ...
+def toggle_os_window_visibility(os_window_id: int, visible: Literal[True, False] = ...) -> bool: ...
+def parse_cli_from_spec(args: list[str], names_map: dict[str, OptionDict], defval_map: dict[str, Any]) -> tuple[dict[str, tuple[Any, bool]], list[str]]: ...
+def layer_shell_config_for_os_window(os_window_id: int) -> dict[str, Any] | None: ...
+def set_layer_shell_config(os_window_id: int, cfg: LayerShellConfig) -> bool: ...
 def wrapped_kitten_names() -> List[str]: ...
 def expand_ansi_c_escapes(test: str) -> str: ...
 def update_tab_bar_edge_colors(os_window_id: int) -> bool: ...
@@ -1705,6 +1727,7 @@ def base64_decode_into(src: Union[str, ReadableBuffer], output: WriteableBuffer)
 def cocoa_recreate_global_menu() -> None: ...
 def cocoa_clear_global_shortcuts() -> None: ...
 def update_pointer_shape(os_window_id: int) -> None: ...
+def is_layer_shell_supported() -> bool: ...
 def os_window_focus_counters() -> Dict[int, int]: ...
 def find_in_memoryview(buf: Union[bytes, memoryview, bytearray], chr: int) -> int: ...
 @overload
@@ -1722,6 +1745,16 @@ def cocoa_play_system_sound_by_id_async(sound_id: int) -> None: ...
 def glfw_get_system_color_theme(query_if_unintialized: bool = True) -> Literal['light', 'dark', 'no_preference']: ...
 def set_redirect_keys_to_overlay(os_window_id: int, tab_id: int, window_id: int, overlay_window_id: int) -> None: ...
 def buffer_keys_in_window(os_window_id: int, tab_id: int, window_id: int, enabled: bool = True) -> bool: ...
+def sprite_idx_to_pos(idx: int, xnum: int, ynum: int) -> tuple[int, int, int]: ...
+def render_box_char(ch: int, width: int, height: int, scale: float = 1.0, dpi_x: float = 96.0, dpi_y: float = 96.0) -> bytes: ...
+def run_at_exit_cleanup_functions() -> None: ...
+def grab_keyboard(grab: bool | None) -> bool: ...
+DecorationTypes = Literal[
+    'curl', 'dashed', 'dotted', 'double', 'straight', 'strikethrough', 'beam_cursor', 'underline_cursor', 'hollow_cursor', 'missing']
+def render_decoration(
+    which: DecorationTypes, cell_width: int, cell_height: int, underline_position: int, underline_thickness: int, dpi: float = 96.0
+) -> bytes: ...
+def os_window_is_invisible(os_window_id: int) -> bool: ...
 
 class MousePosition(TypedDict):
     cell_x: int

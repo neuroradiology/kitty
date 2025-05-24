@@ -67,7 +67,7 @@ typedef void* id;
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int, unsigned long);
 typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef bool (* GLFWhandleurlopen)(const char*);
-typedef void (* GLFWapplicationwillfinishlaunchingfun)(void);
+typedef void (* GLFWapplicationwillfinishlaunchingfun)(bool);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
 
@@ -125,6 +125,7 @@ typedef struct _GLFWwindowNS
     id              delegate;
     id              view;
     id              layer;
+    pid_t           previous_front_most_application;
 
     bool            maximized;
     bool            retina;
@@ -150,6 +151,13 @@ typedef struct _GLFWwindowNS
     GLFWcocoatogglefullscreenfun toggleFullscreenCallback;
     // Dead key state
     UInt32 deadKeyState;
+
+    // Layer shell windows
+    struct {
+        bool is_active;
+        GLFWLayerShellConfig config;
+    } layer_shell;
+
     // Whether a render frame has been requested for this window
     bool renderFrameRequested;
     GLFWcocoarenderframefun renderFrameCallback;

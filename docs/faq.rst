@@ -23,9 +23,25 @@ these characters are followed by a space or en-space (U+2002) in which case
 kitty makes use of the extra cell to render them in two cells. This behavior
 can be turned off for specific symbols using :opt:`narrow_symbols`.
 
+As of version 0.40 kitty has innovated a :doc:`new protocol
+<text-sizing-protocol>` that allows programs running in the terminal to control
+how many cells a character is rendered in thereby solving the issue of
+character width once and for all.
+
+Similarly, some monospaced font families are buggy and have bold or italic
+faces that have characters wider than the width of the normal face, these
+will also result in clipping. Such issues should be reported to the font
+developer. Monospaced font families must have all their characters rendered
+within a fixed width across all faces of the font, otherwise they aren't really
+monospaced.
+
 
 Using a color theme with a background color does not work well in vim?
 -----------------------------------------------------------------------
+
+First, be sure to `use a color scheme in vim <https://github.com/kovidgoyal/kitty/discussions/8196#discussioncomment-11739991>`__
+instead of relying on the terminal theme. Otherwise, background and text selection colours
+may be difficult to read.
 
 Sadly, vim has very poor out-of-the-box detection for modern terminal features.
 Furthermore, it `recently broke detection even more <https://github.com/vim/vim/issues/11729>`__.
@@ -223,6 +239,10 @@ workaround that limitation, |kitty| will read command line options from the file
 :file:`<kitty config dir>/macos-launch-services-cmdline` when it is launched
 from the GUI, i.e. by clicking the |kitty| application icon or using
 ``open -a kitty``. Note that this file is *only read* when running via the GUI.
+The contents of the file are assumed to be the command line to pass to kitty in
+shell syntax, for example::
+
+    --single-instance --override background=red
 
 You can, of course, also run |kitty| from a terminal with command line options,
 using: :file:`/Applications/kitty.app/Contents/MacOS/kitty`.
@@ -263,9 +283,9 @@ fonts to be freely resizable, so it does not support bitmapped fonts.
    symbols, so to force kitty to use the pure NERD font for NERD symbols,
    add the following line to :file:`kitty.conf`::
 
-        # Nerd Fonts v3.2.0
+        # Nerd Fonts v3.3.0
 
-        symbol_map U+e000-U+e00a,U+ea60-U+ebeb,U+e0a0-U+e0c8,U+e0ca,U+e0cc-U+e0d7,U+e200-U+e2a9,U+e300-U+e3e3,U+e5fa-U+e6b1,U+e700-U+e7c5,U+ed00-U+efc1,U+f000-U+f2ff,U+f000-U+f2e0,U+f300-U+f372,U+f400-U+f533,U+f0001-U+f1af0 Symbols Nerd Font Mono
+        symbol_map U+e000-U+e00a,U+ea60-U+ebeb,U+e0a0-U+e0c8,U+e0ca,U+e0cc-U+e0d7,U+e200-U+e2a9,U+e300-U+e3e3,U+e5fa-U+e6b7,U+e700-U+e8ef,U+ed00-U+efc1,U+f000-U+f2ff,U+f000-U+f2e0,U+f300-U+f381,U+f400-U+f533,U+f0001-U+f1af0 Symbols Nerd Font Mono
 
    Those Unicode symbols not in the `Unicode private use areas
    <https://en.wikipedia.org/wiki/Private_Use_Areas>`__ are
@@ -309,10 +329,9 @@ Then, the font will be available in ``kitten choose-fonts``.
 How can I assign a single global shortcut to bring up the kitty terminal?
 -----------------------------------------------------------------------------
 
-Bringing up applications on a single key press is the job of the window
-manager/desktop environment. For ways to do it with kitty (or indeed any
-terminal) in different environments,
-see :iss:`here <45>`.
+Use the :ref:`panel kitten <quake>`, this allows you to use kitty as a quick
+access Quake like terminal and even to use kitty as the desktop background, if
+so desired.
 
 
 I do not like the kitty icon!
@@ -362,9 +381,19 @@ many alternate icons available, click on an icon to visit its homepage:
    :target: https://github.com/sodapopcan/kitty-icon
    :width: 256
 
-On macOS and X11 you can put :file:`kitty.app.icns` (macOS only) or :file:`kitty.app.png` in the
+.. image:: https://github.com/sfsam/some_icons/raw/main/kitty.app.iconset/icon_128x128@2x.png
+   :target: https://github.com/sfsam/some_icons
+   :width: 256
+
+.. image:: https://github.com/igrmk/twiskers/raw/main/icon/twiskers.svg
+   :target: https://github.com/igrmk/twiskers
+   :width: 256
+
+You can put :file:`kitty.app.icns` (macOS only) or :file:`kitty.app.png` in the
 :ref:`kitty configuration directory <confloc>`, and this icon will be applied
-automatically at startup. On X11, this will set the icon for kitty windows.
+automatically at startup. On X11 and Wayland, this will set the icon for kitty windows.
+Note that not all Wayland compositors support the `protocol needed <https://wayland.app/protocols/xdg-toplevel-icon-v1>`__
+for changing window icons.
 
 Unfortunately, on macOS, Apple's Dock does not change its cached icon so the
 custom icon will revert when kitty is quit. Run the following to force the Dock
@@ -441,7 +470,8 @@ You need to make sure that the environment variables you define in your shell's
 rc files are either also defined system wide or via the :opt:`env` directive in
 :file:`kitty.conf`. Common environment variables that cause issues are those
 related to localization, such as :envvar:`LANG`, ``LC_*`` and loading of
-configuration files such as ``XDG_*``, :envvar:`KITTY_CONFIG_DIRECTORY`.
+configuration files such as ``XDG_*``, :envvar:`KITTY_CONFIG_DIRECTORY` and,
+most importantly, ``PATH`` to locate binaries.
 
 To see the environment variables that kitty sees, you can add the following
 mapping to :file:`kitty.conf`::
@@ -455,8 +485,8 @@ setup environment variables system-wide, so people end up putting them in all
 sorts of places where they may or may not work.
 
 
-I am using tmux and have a problem
---------------------------------------
+I am using tmux/zellij and have a problem
+----------------------------------------------
 
 First, terminal multiplexers are :iss:`a bad idea <391#issuecomment-638320745>`,
 do not use them, if at all possible. kitty contains features that do all of what
@@ -478,9 +508,10 @@ for tmux refusing to support images.
 
 If you use any of the advanced features that kitty has innovated, such as
 :doc:`styled underlines </underlines>`, :doc:`desktop notifications
-</desktop-notifications>`, :doc:`extended keyboard support
-</keyboard-protocol>`, :doc:`file transfer </kittens/transfer>`, :doc:`the ssh
-kitten </kittens/ssh>`, :doc:`shell integration </shell-integration>` etc. they may or may not work,
+</desktop-notifications>`, :doc:`variable sized text </text-sizing-protocol>`,
+:doc:`extended keyboard support </keyboard-protocol>`,
+:doc:`file transfer </kittens/transfer>`, :doc:`the ssh kitten </kittens/ssh>`,
+:doc:`shell integration </shell-integration>` etc. they may or may not work,
 depending on the whims of tmux's maintainer, your version of tmux, etc.
 
 

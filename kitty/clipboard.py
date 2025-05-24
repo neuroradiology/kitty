@@ -3,11 +3,11 @@
 
 import io
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from enum import Enum, IntEnum
 from gettext import gettext as _
 from tempfile import TemporaryFile
-from typing import IO, Callable, NamedTuple, Optional, Union
+from typing import IO, NamedTuple, Union
 
 from .conf.utils import uniq
 from .constants import supports_primary_selection
@@ -24,11 +24,13 @@ from .fast_data_types import (
 )
 from .utils import log_error
 
+READ_RESPONSE_CHUNK_SIZE = 4096
+
 
 class Tempfile:
 
     def __init__(self, max_size: int) -> None:
-        self.file: Union[io.BytesIO, IO[bytes]] = io.BytesIO()
+        self.file: io.BytesIO | IO[bytes] = io.BytesIO()
         self.max_size = max_size
 
     def rollover_if_needed(self, sz: int) -> None:
@@ -74,11 +76,15 @@ TARGETS_MIME = '.'
 class ClipboardType(IntEnum):
     clipboard = GLFW_CLIPBOARD
     primary_selection = GLFW_PRIMARY_SELECTION
+    unknown = -311
 
     @staticmethod
     def from_osc52_where_field(where: str) -> 'ClipboardType':
-        where = where or 's0'
-        return ClipboardType.clipboard if 'c' in where or 's' in where else ClipboardType.primary_selection
+        if where in ('c', 's'):
+            return ClipboardType.clipboard
+        if where == 'p':
+            return ClipboardType.primary_selection
+        return ClipboardType.unknown
 
 
 class Clipboard:
@@ -88,7 +94,7 @@ class Clipboard:
         self.clipboard_type = clipboard_type
         self.enabled = self.clipboard_type is ClipboardType.clipboard or supports_primary_selection
 
-    def set_text(self, x: Union[str, bytes]) -> None:
+    def set_text(self, x: str | bytes) -> None:
         if isinstance(x, str):
             x = x.encode('utf-8')
         self.set_mime({'text/plain': x})
@@ -153,7 +159,7 @@ class Clipboard:
         return data()
 
 
-def set_clipboard_string(x: Union[str, bytes]) -> None:
+def set_clipboard_string(x: str | bytes) -> None:
     get_boss().clipboard.set_text(x)
 
 
@@ -161,7 +167,7 @@ def get_clipboard_string() -> str:
     return get_boss().clipboard.get_text()
 
 
-def set_primary_selection(x: Union[str, bytes]) -> None:
+def set_primary_selection(x: str | bytes) -> None:
     get_boss().primary_selection.set_text(x)
 
 
@@ -270,7 +276,7 @@ class WriteRequest:
             x = {mime: self.tempfile.create_chunker(pos.start, pos.size) for mime, pos in self.mime_map.items()}
             cp.set_mime(x)
 
-    def add_base64_data(self, data: Union[str, bytes], mime: str = 'text/plain') -> None:
+    def add_base64_data(self, data: str | bytes, mime: str = 'text/plain') -> None:
         if isinstance(data, str):
             data = data.encode('ascii')
         if self.currently_writing_mime and self.currently_writing_mime != mime:
@@ -314,8 +320,9 @@ class ClipboardRequestManager:
 
     def __init__(self, window_id: int) -> None:
         self.window_id = window_id
-        self.currently_asking_permission_for: Optional[ReadRequest] = None
-        self.in_flight_write_request: Optional[WriteRequest] = None
+        self.currently_asking_permission_for: ReadRequest | None = None
+        self.in_flight_write_request: WriteRequest | None = None
+        self.osc52_in_flight_write_requests: dict[ClipboardType, WriteRequest] = {}
 
     def parse_osc_5522(self, data: memoryview) -> None:
         import base64
@@ -392,18 +399,22 @@ class ClipboardRequestManager:
         else:
             where = str(data, "utf-8", 'replace')
             data = data[len(data):]
+        destinations = {ClipboardType.from_osc52_where_field(where) for where in where or 's0'}
+        destinations.discard(ClipboardType.unknown)
         if len(data) == 1 and data.tobytes() == b'?':
-            rr = ReadRequest(is_primary_selection=ClipboardType.from_osc52_where_field(where) is ClipboardType.primary_selection)
-            self.handle_read_request(rr)
+            for d in destinations:
+                rr = ReadRequest(is_primary_selection=d is ClipboardType.primary_selection)
+                self.handle_read_request(rr)
         else:
-            wr = self.in_flight_write_request
-            if wr is None:
-                wr = self.in_flight_write_request = WriteRequest(ClipboardType.from_osc52_where_field(where) is ClipboardType.primary_selection)
-            wr.add_base64_data(data)
-            if is_partial:
-                return
-            self.in_flight_write_request = None
-            self.handle_write_request(wr)
+            for d in destinations:
+                wr = self.osc52_in_flight_write_requests.get(d)
+                if wr is None:
+                    wr = self.osc52_in_flight_write_requests[d] = WriteRequest(d is ClipboardType.primary_selection)
+                wr.add_base64_data(data)
+                if is_partial:
+                    return
+                self.osc52_in_flight_write_requests.pop(d, None)
+                self.handle_write_request(wr)
 
     def handle_write_request(self, wr: WriteRequest) -> None:
         wr.flush_base64_data()
@@ -462,8 +473,8 @@ class ClipboardRequestManager:
             assert w is not None
             mv = memoryview(data)
             while mv:
-                w.screen.send_escape_code_to_child(ESC_OSC, rr.encode_response(payload=mv[:4096], mime=current_mime))
-                mv = mv[4096:]
+                w.screen.send_escape_code_to_child(ESC_OSC, rr.encode_response(payload=mv[:READ_RESPONSE_CHUNK_SIZE], mime=current_mime))
+                mv = mv[READ_RESPONSE_CHUNK_SIZE:]
 
         for mime in rr.mime_types:
             current_mime = mime
@@ -521,3 +532,4 @@ class ClipboardRequestManager:
     def close(self) -> None:
         if self.in_flight_write_request is not None:
             self.in_flight_write_request = None
+        self.osc52_in_flight_write_requests.clear()

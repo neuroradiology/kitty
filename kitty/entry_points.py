@@ -94,24 +94,7 @@ def edit(args: list[str]) -> None:
 
 def shebang(args: list[str]) -> None:
     from kitty.constants import kitten_exe
-    script_path = args[1]
-    cmd = args[2:]
-    if cmd == ['__ext__']:
-        cmd = [os.path.splitext(script_path)[1][1:].lower()]
-    try:
-        f = open(script_path)
-    except FileNotFoundError:
-        raise SystemExit(f'The file {script_path} does not exist')
-    with f:
-        if f.read(2) == '#!':
-            line = f.readline().strip()
-            _plat = sys.platform.lower()
-            is_macos: bool = 'darwin' in _plat
-            if is_macos:
-                cmd = line.split(' ')
-            else:
-                cmd = line.split(' ', maxsplit=1)
-    os.execvp(kitten_exe(), ['kitten', '__confirm_and_run_shebang__'] + cmd + [script_path])
+    os.execvp(kitten_exe(), ['kitten', '__shebang__', 'confirm-if-needed'] + args[1:])
 
 
 def run_kitten(args: list[str]) -> None:
@@ -180,10 +163,8 @@ def setup_openssl_environment(ext_dir: str) -> None:
 
 
 def main() -> None:
-    if getattr(sys, 'frozen', False):
-        ext_dir: str = getattr(sys, 'kitty_run_data').get('extensions_dir')
-        if ext_dir:
-            setup_openssl_environment(ext_dir)
+    if getattr(sys, 'frozen', False) and (ext_dir := getattr(sys, 'kitty_run_data', {}).get('extensions_dir')):
+        setup_openssl_environment(ext_dir)
     first_arg = '' if len(sys.argv) < 2 else sys.argv[1]
     func = entry_points.get(first_arg)
     if func is None:

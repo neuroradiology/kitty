@@ -9,14 +9,13 @@ import subprocess
 import sys
 import time
 import unittest
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from functools import lru_cache
 from tempfile import TemporaryDirectory
 from threading import Thread
 from typing import (
     Any,
-    Callable,
     NoReturn,
     Optional,
 )
@@ -180,8 +179,8 @@ class GoProc(Thread):
 
 def run_go(packages: set[str], names: str) -> GoProc:
     go = go_exe()
-    go_pkg_args = [f'kitty/{x}' for x in packages]
-    cmd = [go, 'test', '-v']
+    go_pkg_args = [f'github.com/kovidgoyal/kitty/{x}' for x in packages]
+    cmd = [go, 'test', '--tags', 'testing', '-v']
     for name in names:
         cmd.extend(('-run', name))
     cmd += go_pkg_args

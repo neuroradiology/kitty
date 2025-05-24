@@ -34,11 +34,12 @@ inside the kitty terminal to report key events.
 
 In addition to kitty, this protocol is also implemented in:
 
-* The `foot terminal <https://codeberg.org/dnkl/foot/issues/319>`__
-* The `WezTerm terminal <https://wezfurlong.org/wezterm/config/lua/config/enable_kitty_keyboard.html>`__
 * The `alacritty terminal <https://github.com/alacritty/alacritty/pull/7125>`__
-* The `rio terminal <https://github.com/raphamorim/rio/commit/cd463ca37677a0fc48daa8795ea46dadc92b1e95>`__
+* The `ghostty terminal <https://ghostty.org>`__
+* The `foot terminal <https://codeberg.org/dnkl/foot/issues/319>`__
 * The `iTerm2 terminal <https://gitlab.com/gnachman/iterm2/-/issues/10017>`__
+* The `rio terminal <https://github.com/raphamorim/rio/commit/cd463ca37677a0fc48daa8795ea46dadc92b1e95>`__
+* The `WezTerm terminal <https://wezfurlong.org/wezterm/config/lua/config/enable_kitty_keyboard.html>`__
 
 Libraries implementing this protocol:
 
@@ -148,14 +149,14 @@ user presses, for example, :kbd:`ctrl+shift+a` the escape code would be ``CSI
 97;modifiers u``. It *must not* be ``CSI 65; modifiers u``.
 
 If *alternate key reporting* is requested by the program running in the
-terminal, the terminal can send two additional Unicode codepoints, the
-*shifted key* and *base layout key*, separated by colons.
-The shifted key is simply the upper-case version of ``unicode-codepoint``, or
-more technically, the shifted version. So `a` becomes `A` and so on, based on
-the current keyboard layout. This is needed to be able to match against a
-shortcut such as :kbd:`ctrl+plus` which depending on the type of keyboard could
-be either :kbd:`ctrl+shift+equal` or :kbd:`ctrl+plus`. Note that the shifted
-key must be present only if shift is also present in the modifiers.
+terminal, the terminal can send two additional Unicode codepoints, the *shifted
+key* and *base layout key*, separated by colons. The shifted key is simply the
+upper-case version of ``unicode-codepoint``, or more technically, the shifted
+version, in the currently active keyboard layout. So `a` becomes `A` and so on,
+based on the current keyboard layout. This is needed to be able to match
+against a shortcut such as :kbd:`ctrl+plus` which depending on the type of
+keyboard could be either :kbd:`ctrl+shift+equal` or :kbd:`ctrl+plus`. Note that
+the shifted key must be present only if shift is also present in the modifiers.
 
 The *base layout key* is the key corresponding to the physical key in the
 standard PC-101 key layout. So for example, if the user is using a Cyrillic
@@ -163,7 +164,7 @@ keyboard with a Cyrillic keyboard layout pressing the :kbd:`ctrl+С` key will
 be :kbd:`ctrl+c` in the standard layout. So the terminal should send the *base
 layout key* as ``99`` corresponding to the ``c`` key.
 
-If only one alternate key is present, it is the *shifted key* if the terminal
+If only one alternate key is present, it is the *shifted key*. If the terminal
 wants to send only a base layout key but no shifted key, it must use an empty
 sub-field for the shifted key, like this::
 
@@ -336,7 +337,7 @@ the bytes used for CSI control codes.
 Turning on this flag will cause the terminal to report the :kbd:`Esc`, :kbd:`alt+key`,
 :kbd:`ctrl+key`, :kbd:`ctrl+alt+key`, :kbd:`shift+alt+key` keys using ``CSI u`` sequences instead
 of legacy ones. Here key is any ASCII key as described in :ref:`legacy_text`.
-Additionally, all keypad keys will be reported as separate keys with ``CSI u``
+Additionally, all non text keypad keys will be reported as separate keys with ``CSI u``
 encoding, using dedicated numbers from the :ref:`table below <functional>`.
 
 With this flag turned on, all key events that do not generate text are
@@ -353,7 +354,7 @@ are the :kbd:`Enter`, :kbd:`Tab` and :kbd:`Backspace` keys which still generate 
 bytes as in legacy mode this is to allow the user to type and execute commands
 in the shell such as ``reset`` after a program that sets this mode crashes
 without clearing it. Note that the Lock modifiers are not reported for text
-producing keys, to keep them useable in legacy programs. To get lock modifiers
+producing keys, to keep them usable in legacy programs. To get lock modifiers
 for all keys use the :ref:`report_all_keys` enhancement.
 
 .. _report_events:
@@ -379,8 +380,13 @@ Report alternate keys
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 This progressive enhancement (``0b100``) causes the terminal to report
-alternate key values in addition to the main value, to aid in shortcut
-matching. See :ref:`key_codes` for details on how these are reported.
+alternate key values *in addition* to the main value, to aid in shortcut
+matching. See :ref:`key_codes` for details on how these are reported. Note that
+this flag is a pure enhancement to the form of the escape code used to
+represent key events, only key events represented as escape codes due to the
+other enhancements in effect will be affected by this enhancement. In other
+words, only if a key event was already going to be represented as an escape
+code due to one of the other enhancements will this enhancement affect it.
 
 .. _report_all_keys:
 
@@ -399,17 +405,20 @@ Report associated text enhancement below.
 
 Additionally, with this mode, events for pressing modifier keys are reported.
 Note that *all* keys are reported as escape codes, including :kbd:`Enter`,
-:kbd:`Tab`, :kbd:`Backspace` etc.
+:kbd:`Tab`, :kbd:`Backspace` etc. Note that this enhancement implies all keys
+are automatically disambiguated as well, since they are represented in their
+canonical escape code form.
 
 .. _report_text:
 
 Report associated text
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This progressive enhancement (``0b10000``) causes key events that generate text
-to be reported as ``CSI u`` escape codes with the text embedded in the escape
-code. See :ref:`text_as_codepoints` above for details on the mechanism.
-
+This progressive enhancement (``0b10000``) *additionally* causes key events that
+generate text to be reported as ``CSI u`` escape codes with the text embedded
+in the escape code. See :ref:`text_as_codepoints` above for details on the
+mechanism. Note that this flag is an enhancement to :ref:`report_all_keys`
+and is undefined if used without it.
 
 .. _detection:
 
@@ -424,6 +433,13 @@ followed by request for the `primary device attributes
 attributes is received without getting back an answer for the progressive
 enhancement the terminal does not support this protocol.
 
+.. note::
+   Terminal implementations of this protocol are **strongly** encouraged to
+   implement all progressive enhancements. It does not make sense to
+   implement only a subset. Nonetheless, there are likely to be some terminal
+   implementations that do not do so, applications can detect such
+   implementations by first setting the desired progressive enhancements and
+   then querying for the :ref:`current progressive enhancement <progressive_enhancement>`
 
 Legacy key event encoding
 --------------------------------

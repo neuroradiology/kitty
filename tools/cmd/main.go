@@ -5,13 +5,13 @@ package main
 import (
 	"os"
 
-	"kitty/kittens/ssh"
-	"kitty/tools/cli"
-	"kitty/tools/cmd/completion"
-	"kitty/tools/cmd/tool"
+	"github.com/kovidgoyal/kitty/kittens/ssh"
+	"github.com/kovidgoyal/kitty/tools/cli"
+	"github.com/kovidgoyal/kitty/tools/cmd/completion"
+	"github.com/kovidgoyal/kitty/tools/cmd/tool"
 )
 
-func main() {
+func KittenMain(args ...string) {
 	krm := os.Getenv("KITTY_KITTEN_RUN_MODULE")
 	os.Unsetenv("KITTY_KITTEN_RUN_MODULE")
 	switch krm {
@@ -31,5 +31,9 @@ func main() {
 	tool.KittyToolEntryPoints(root)
 	completion.EntryPoint(root)
 
-	root.Exec()
+	root.Exec(args...)
+}
+
+func main() {
+	KittenMain()
 }

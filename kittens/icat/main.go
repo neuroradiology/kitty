@@ -11,13 +11,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"kitty/tools/cli"
-	"kitty/tools/tty"
-	"kitty/tools/tui"
-	"kitty/tools/tui/graphics"
-	"kitty/tools/utils"
-	"kitty/tools/utils/images"
-	"kitty/tools/utils/style"
+	"github.com/kovidgoyal/kitty/tools/cli"
+	"github.com/kovidgoyal/kitty/tools/tty"
+	"github.com/kovidgoyal/kitty/tools/tui"
+	"github.com/kovidgoyal/kitty/tools/tui/graphics"
+	"github.com/kovidgoyal/kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/utils/images"
+	"github.com/kovidgoyal/kitty/tools/utils/style"
 
 	"golang.org/x/sys/unix"
 )
@@ -165,20 +165,20 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 			return 1, fmt.Errorf("Invalid size specification: " + opts.UseWindowSize)
 		}
 		screen_size = &unix.Winsize{}
-		t := 0
-		if t, err = strconv.Atoi(parts[0]); err != nil || t < 1 {
+		var t uint64
+		if t, err = strconv.ParseUint(parts[0], 10, 16); err != nil || t < 1 {
 			return 1, fmt.Errorf("Invalid size specification: %s with error: %w", opts.UseWindowSize, err)
 		}
 		screen_size.Col = uint16(t)
-		if t, err = strconv.Atoi(parts[1]); err != nil || t < 1 {
+		if t, err = strconv.ParseUint(parts[1], 10, 16); err != nil || t < 1 {
 			return 1, fmt.Errorf("Invalid size specification: %s with error: %w", opts.UseWindowSize, err)
 		}
 		screen_size.Row = uint16(t)
-		if t, err = strconv.Atoi(parts[2]); err != nil || t < 1 {
+		if t, err = strconv.ParseUint(parts[2], 10, 16); err != nil || t < 1 {
 			return 1, fmt.Errorf("Invalid size specification: %s with error: %w", opts.UseWindowSize, err)
 		}
 		screen_size.Xpixel = uint16(t)
-		if t, err = strconv.Atoi(parts[3]); err != nil || t < 1 {
+		if t, err = strconv.ParseUint(parts[3], 10, 16); err != nil || t < 1 {
 			return 1, fmt.Errorf("Invalid size specification: %s with error: %w", opts.UseWindowSize, err)
 		}
 		screen_size.Ypixel = uint16(t)
@@ -222,7 +222,7 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 	keep_going.Store(true)
 	if !opts.DetectSupport && num_of_items > 0 {
 		num_workers := utils.Max(1, utils.Min(num_of_items, runtime.NumCPU()))
-		for i := 0; i < num_workers; i++ {
+		for range num_workers {
 			go run_worker()
 		}
 	}

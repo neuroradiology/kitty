@@ -12,7 +12,8 @@
 #undef _DARWIN_C_SOURCE
 #endif
 
-#include "data-types.h"
+#include "char-props.h"
+#include "launcher/utils.h"
 #include "line.h"
 #include "charsets.h"
 #include "base64.h"
@@ -22,7 +23,6 @@
 #include "cleanup.h"
 #include "safe-wrappers.h"
 #include "control-codes.h"
-#include "wcwidth-std.h"
 #include "wcswidth.h"
 #include "modes.h"
 #include <stddef.h>
@@ -66,16 +66,6 @@ process_group_map(PyObject *self UNUSED, PyObject *args UNUSED) {
     return ans;
 }
 #endif
-
-static PyObject*
-redirect_std_streams(PyObject UNUSED *self, PyObject *args) {
-    char *devnull = NULL;
-    if (!PyArg_ParseTuple(args, "s", &devnull)) return NULL;
-    if (freopen(devnull, "r", stdin) == NULL) return PyErr_SetFromErrno(PyExc_OSError);
-    if (freopen(devnull, "w", stdout) == NULL) return PyErr_SetFromErrno(PyExc_OSError);
-    if (freopen(devnull, "w", stderr) == NULL)  return PyErr_SetFromErrno(PyExc_OSError);
-    Py_RETURN_NONE;
-}
 
 static PyObject*
 pybase64_encode(PyObject UNUSED *self, PyObject *const *args, Py_ssize_t nargs) {
@@ -134,6 +124,28 @@ base64_decode_into(PyObject UNUSED *self, PyObject *args) {
     return PyLong_FromSize_t(sz);
 }
 
+static PyObject*
+split_into_graphemes(PyObject UNUSED *self, PyObject *src) {
+    if (!PyUnicode_Check(src)) { PyErr_SetString(PyExc_TypeError, "must provide a unicode string"); return NULL; }
+    int kind = PyUnicode_KIND(src); char *data = PyUnicode_DATA(src);
+    RAII_PyObject(ans, PyList_New(0));
+    if (!ans) return NULL;
+    GraphemeSegmentationResult s; grapheme_segmentation_reset(&s);
+    Py_ssize_t pos = 0;
+    for (Py_ssize_t i = 0; i < PyUnicode_GET_LENGTH(src); i++) {
+        char_type ch = PyUnicode_READ(kind, data, i);
+        if (!(s = grapheme_segmentation_step(s, char_props_for(ch))).add_to_current_cell) {
+            RAII_PyObject(u, PyUnicode_FromKindAndData(kind, data + kind * pos, i - pos));
+            if (!u || PyList_Append(ans, u) != 0) return NULL;
+            pos = i;
+        }
+    }
+    if (pos < PyUnicode_GET_LENGTH(src)) {
+        RAII_PyObject(u, PyUnicode_FromKindAndData(kind, data + kind * pos, PyUnicode_GET_LENGTH(src) - pos));
+        if (!u || PyList_Append(ans, u) != 0) return NULL;
+    }
+    return Py_NewRef(ans);
+}
 
 typedef struct StreamingBase64Decoder {
     PyObject_HEAD
@@ -406,7 +418,7 @@ py_shm_unlink(PyObject UNUSED *self, PyObject *args) {
 
 static PyObject*
 wcwidth_wrap(PyObject UNUSED *self, PyObject *chr) {
-    return PyLong_FromLong(wcwidth_std(PyLong_AsLong(chr)));
+    return PyLong_FromLong(wcwidth_std(char_props_for(PyLong_AsLong(chr))));
 }
 
 static PyObject*
@@ -605,15 +617,82 @@ py_timed_debug_print(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+py_run_atexit_cleanup_functions(PyObject *self UNUSED, PyObject *args UNUSED) {
+    run_at_exit_cleanup_functions();
+    Py_RETURN_NONE;
+}
+
+static PyObject*
+py_char_props_for(PyObject *self UNUSED, PyObject *ch) {
+    if (!PyUnicode_Check(ch) || PyUnicode_GET_LENGTH(ch) != 1) { PyErr_SetString(PyExc_TypeError, "must supply a single character"); return NULL; }
+    char_type c = PyUnicode_READ_CHAR(ch, 0);
+    CharProps cp = char_props_for(c);
+#define B(x) #x, cp.x ? Py_True : Py_False
+    return Py_BuildValue("{si sO sB sB ss sO sO}",
+        "width", wcwidth_std(cp), B(is_extended_pictographic), "grapheme_break", cp.grapheme_break,
+        "indic_conjunct_break", cp.indic_conjunct_break, "category", char_category(cp), B(is_emoji), B(is_emoji_presentation_base)
+    );
+#undef B
+}
+
+static PyObject*
+expanduser(PyObject *self UNUSED, PyObject *path) {
+    if (!PyUnicode_Check(path)) { PyErr_SetString(PyExc_TypeError, "path must a string"); return NULL; }
+    char buf[PATH_MAX + 1];
+    expand_tilde(PyUnicode_AsUTF8(path), buf, arraysz(buf));
+    return PyUnicode_FromString(buf);
+}
+
+static PyObject*
+abspath(PyObject *self UNUSED, PyObject *path) {
+    if (!PyUnicode_Check(path)) { PyErr_SetString(PyExc_TypeError, "path must a string"); return NULL; }
+    char buf[PATH_MAX + 1];
+    lexical_absolute_path(PyUnicode_AsUTF8(path), buf, arraysz(buf));
+    return PyUnicode_FromString(buf);
+}
+
+static PyObject*
+read_file(PyObject *self UNUSED, PyObject *path) {
+    if (!PyUnicode_Check(path)) { PyErr_SetString(PyExc_TypeError, "path must a string"); return NULL; }
+    size_t sz;
+    char *result = read_full_file(PyUnicode_AsUTF8(path), &sz);
+    if (!result) { PyErr_SetFromErrno(PyExc_OSError); return NULL; }
+    PyObject *ans = PyBytes_FromStringAndSize(result, sz);
+    free(result);
+    return ans;
+}
+
+static PyObject*
+py_makedirs(PyObject *self UNUSED, PyObject *args) {
+    int mode = 0755; const char *p;
+    if (!PyArg_ParseTuple(args, "s|i", &p, &mode)) return NULL;
+    if (!makedirs(p, mode)) { PyErr_SetFromErrno(PyExc_OSError); return NULL; }
+    Py_RETURN_NONE;
+}
+
+static PyObject*
+py_get_config_dir(PyObject *self UNUSED, PyObject *args UNUSED) {
+    char buf[PATH_MAX];
+    if (get_config_dir(buf, PATH_MAX)) return PyUnicode_FromString(buf);
+    return PyUnicode_FromString("");
+}
+
+#include "launcher/cli-parser.h"
 
 static PyMethodDef module_methods[] = {
     METHODB(replace_c0_codes_except_nl_space_tab, METH_O),
+    METHODB(read_file, METH_O),
+    {"parse_cli_from_spec", parse_cli_from_python_spec, METH_VARARGS, ""},
     {"wcwidth", (PyCFunction)wcwidth_wrap, METH_O, ""},
+    {"expanduser", (PyCFunction)expanduser, METH_O, ""},
+    {"abspath", (PyCFunction)abspath, METH_O, ""},
     {"expand_ansi_c_escapes", (PyCFunction)expand_ansi_c_escapes, METH_O, ""},
     {"get_docs_ref_map", (PyCFunction)get_docs_ref_map, METH_NOARGS, ""},
+    {"get_config_dir", (PyCFunction)py_get_config_dir, METH_NOARGS, ""},
     {"wcswidth", (PyCFunction)wcswidth_std, METH_O, ""},
-    {"unicode_database_version", (PyCFunction)unicode_database_version, METH_NOARGS, ""},
     {"open_tty", open_tty, METH_VARARGS, ""},
+    {"makedirs", py_makedirs, METH_VARARGS, ""},
     {"normal_tty", normal_tty, METH_VARARGS, ""},
     {"raw_tty", raw_tty, METH_VARARGS, ""},
     {"close_tty", close_tty, METH_VARARGS, ""},
@@ -622,8 +701,9 @@ static PyMethodDef module_methods[] = {
     {"base64_encode_into", (PyCFunction)base64_encode_into, METH_VARARGS, ""},
     {"base64_decode", (PyCFunction)(void (*) (void))(pybase64_decode), METH_O, ""},
     {"base64_decode_into", (PyCFunction)base64_decode_into, METH_VARARGS, ""},
+    {"char_props_for", py_char_props_for, METH_O, ""},
+    {"split_into_graphemes", (PyCFunction)split_into_graphemes, METH_O, ""},
     {"thread_write", (PyCFunction)cm_thread_write, METH_VARARGS, ""},
-    {"redirect_std_streams", (PyCFunction)redirect_std_streams, METH_VARARGS, ""},
     {"locale_is_valid", (PyCFunction)locale_is_valid, METH_VARARGS, ""},
     {"shm_open", (PyCFunction)py_shm_open, METH_VARARGS, ""},
     {"shm_unlink", (PyCFunction)py_shm_unlink, METH_VARARGS, ""},
@@ -632,6 +712,7 @@ static PyMethodDef module_methods[] = {
     {"monotonic", (PyCFunction)py_monotonic, METH_NOARGS, ""},
     {"timed_debug_print", (PyCFunction)py_timed_debug_print, METH_VARARGS, ""},
     {"find_in_memoryview", (PyCFunction)find_in_memoryview, METH_VARARGS, ""},
+    {"run_at_exit_cleanup_functions", (PyCFunction)py_run_atexit_cleanup_functions, METH_NOARGS, ""},
 #ifdef __APPLE__
     METHODB(user_cache_dir, METH_NOARGS),
     METHODB(process_group_map, METH_NOARGS),
@@ -707,14 +788,10 @@ shift_to_first_set_bit(CellAttrs x) {
     return ans;
 }
 
+
 EXPORTED PyMODINIT_FUNC
 PyInit_fast_data_types(void) {
     PyObject *m;
-    if (sizeof(CellAttrs) != 2u) {
-        PyErr_SetString(PyExc_RuntimeError, "Size of CellAttrs is not 2 on this platform");
-        return NULL;
-    }
-
     m = PyModule_Create(&module);
     if (m == NULL) return NULL;
     init_monotonic();
@@ -763,7 +840,6 @@ PyInit_fast_data_types(void) {
 #undef s
     PyModule_AddIntConstant(m, "MARK_MASK", MARK_MASK);
     PyModule_AddIntConstant(m, "DECORATION_MASK", DECORATION_MASK);
-    PyModule_AddIntConstant(m, "NUM_UNDERLINE_STYLES", NUM_UNDERLINE_STYLES);
     PyModule_AddStringMacro(m, ERROR_PREFIX);
 #ifdef KITTY_VCS_REV
     PyModule_AddStringMacro(m, KITTY_VCS_REV);
@@ -783,6 +859,7 @@ PyInit_fast_data_types(void) {
     PyModule_AddIntMacro(m, ESC_APC);
     PyModule_AddIntMacro(m, ESC_DCS);
     PyModule_AddIntMacro(m, ESC_PM);
+    PyModule_AddIntMacro(m, TEXT_SIZE_CODE);
 #ifdef __APPLE__
     // Apple says its SHM_NAME_MAX but SHM_NAME_MAX is not actually declared in typical CrApple style.
     // This value is based on experimentation and from qsharedmemory.cpp in Qt
